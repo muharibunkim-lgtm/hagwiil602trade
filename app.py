@@ -114,6 +114,141 @@ DISTANCE = {
 }
 MOVE_COST = {1: 50_000, 2: 100_000, 3: 200_000}
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 도시별 상품 판매가 테이블
+# 구조: CITY_SELL_PRICES[상품명][판매도시] = 판매가
+# 생산도시 = 매수가의 70% (손실), 인근 = 소익, 원거리 수요도시 = 대익
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def build_sell_prices():
+    """
+    각 상품의 도시별 판매가 생성
+    - 생산 도시:  매수가 × 0.70  (반드시 손해)
+    - 일반 도시:  매수가 × 계수  (거리·수요에 따라 다름)
+    """
+    # (생산도시, 상품명, 매수가, -, -) 목록으로부터 계산
+    # 계수 테이블: SELL_RATE[생산도시][판매도시]
+    SELL_RATE = {
+        "상하이": {
+            "상하이":    0.70,   # 생산지 손해
+            "뭄바이":    1.00,
+            "런던":      1.50,
+            "카이로":    1.40,
+            "뉴욕":      1.70,
+            "상파울루":  1.60,
+            "시드니":    1.10,
+            "레이캬비크":1.45,
+        },
+        "뭄바이": {
+            "상하이":    1.05,
+            "뭄바이":    0.70,   # 생산지
+            "런던":      1.60,
+            "카이로":    1.10,
+            "뉴욕":      1.65,
+            "상파울루":  1.55,
+            "시드니":    1.15,
+            "레이캬비크":1.50,
+        },
+        "런던": {
+            "상하이":    1.45,
+            "뭄바이":    1.30,
+            "런던":      0.70,   # 생산지
+            "카이로":    1.20,
+            "뉴욕":      1.10,
+            "상파울루":  1.55,
+            "시드니":    1.50,
+            "레이캬비크":0.95,
+        },
+        "카이로": {
+            "상하이":    1.40,
+            "뭄바이":    1.15,
+            "런던":      1.30,
+            "카이로":    0.70,   # 생산지
+            "뉴욕":      1.55,
+            "상파울루":  1.45,
+            "시드니":    1.35,
+            "레이캬비크":1.25,
+        },
+        "뉴욕": {
+            "상하이":    1.65,
+            "뭄바이":    1.55,
+            "런던":      1.20,
+            "카이로":    1.45,
+            "뉴욕":      0.70,   # 생산지
+            "상파울루":  1.10,
+            "시드니":    1.50,
+            "레이캬비크":1.40,
+        },
+        "상파울루": {
+            "상하이":    1.55,
+            "뭄바이":    1.45,
+            "런던":      1.60,
+            "카이로":    1.40,
+            "뉴욕":      1.15,
+            "상파울루":  0.70,   # 생산지
+            "시드니":    1.35,
+            "레이캬비크":1.50,
+        },
+        "시드니": {
+            "상하이":    1.20,
+            "뭄바이":    1.25,
+            "런던":      1.55,
+            "카이로":    1.45,
+            "뉴욕":      1.50,
+            "상파울루":  1.40,
+            "시드니":    0.70,   # 생산지
+            "레이캬비크":1.30,
+        },
+        "레이캬비크": {
+            "상하이":    1.50,
+            "뭄바이":    1.45,
+            "런던":      0.95,
+            "카이로":    1.35,
+            "뉴욕":      1.40,
+            "상파울루":  1.55,
+            "시드니":    1.45,
+            "레이캬비크":0.70,   # 생산지
+        },
+    }
+
+    prices = {}  # prices[상품명][도시] = 판매가
+    for (prod_city, good_name, buy_price, _, _) in GOODS_DATA:
+        prices[good_name] = {}
+        for sell_city in CITIES:
+            rate = SELL_RATE.get(prod_city, {}).get(sell_city, 0.70)
+            prices[good_name][sell_city] = int(buy_price * rate)
+    return prices
+
+# 전역 판매가 테이블 (앱 시작 시 1회 생성)
+CITY_SELL_PRICES = build_sell_prices()
+
+
+def get_sell_price(good_name, sell_city):
+    """현재 도시에서 해당 상품의 판매가 조회 (DB 가격 변동 이벤트 반영)"""
+    # 태풍/폭등 이벤트 등으로 DB goods 가격이 변경된 경우 배율을 반영
+    base_good = fetchone("SELECT buy_price, city FROM goods WHERE name=? LIMIT 1", (good_name,))
+    if not base_good:
+        return CITY_SELL_PRICES.get(good_name, {}).get(sell_city, 0)
+
+    prod_city = base_good["city"]
+    # 원래 매수가 대비 현재 DB 매수가 배율 계산
+    original_buy = next(
+        (g[2] for g in GOODS_DATA if g[0] == prod_city and g[1] == good_name), None
+    )
+    if original_buy and original_buy > 0:
+        current_buy = fetchone(
+            "SELECT buy_price FROM goods WHERE name=? AND city=?", (good_name, prod_city)
+        )
+        if current_buy:
+            event_rate = current_buy["buy_price"] / original_buy
+        else:
+            event_rate = 1.0
+    else:
+        event_rate = 1.0
+
+    base_sell = CITY_SELL_PRICES.get(good_name, {}).get(sell_city, 0)
+    return int(base_sell * event_rate)
+
 def get_distance(c1, c2):
     """두 도시 간 거리 등급 반환"""
     key = (c1, c2) if (c1, c2) in DISTANCE else (c2, c1)
@@ -320,15 +455,14 @@ def check_city_levelup(city_name):
         add_log(0, f"🎉 [{city_name}] 이 Lv.3 으로 레벨업! 최고급 무역품 해금!")
 
 def total_assets(sid):
-    """학생 총 자산 = 잔고 + 재고 평가액 + 지분 평가액"""
+    """학생 총 자산 = 잔고 + 재고 평가액(현위치 판매가 기준) + 지분 평가액"""
     user = get_user(sid)
     total = user["money"]
-    # 재고
+    cur_city = user["location"]
+    # 재고: 현재 위치에서 팔 수 있는 가격으로 평가
     for inv in get_inventory(sid):
-        g = fetchone("SELECT sell_price FROM goods WHERE name=? AND city=?",
-                     (inv["good_name"], inv["city"]))
-        if g:
-            total += g["sell_price"] * inv["quantity"]
+        sell_val = get_sell_price(inv["good_name"], cur_city)
+        total += sell_val * inv["quantity"]
     # 지분
     shares_rows = fetchall("SELECT city, amount FROM shares WHERE student_id=?", (sid,))
     for s in shares_rows:
@@ -550,9 +684,50 @@ def tab_trade(sid):
         "해금 레벨": f"Lv.{g['unlock_level']}"
     } for g in goods])
 
+       # ── 가격 정보 표시 (현재 도시 기준) ────────────────────────────────
     st.markdown("### 📊 현재 도시 무역품 가격")
-    chart_data = df_goods.set_index("상품")[["매수가(구매)", "매도가(판매)"]]
+
+    price_rows = []
+    for g in goods:
+        sell_here = get_sell_price(g["name"], cur_city)
+        profit_rate = round((sell_here - g["buy_price"]) / g["buy_price"] * 100, 1)
+        price_rows.append({
+            "상품": g["name"],
+            "매수가 (구매)": g["buy_price"],
+            f"현 도시 판매가 ({cur_city})": sell_here,
+            "현 도시 손익률": f"{'🟢 +' if profit_rate >= 0 else '🔴 '}{profit_rate}%",
+            "해금 레벨": f"Lv.{g['unlock_level']}"
+        })
+
+    df_goods = pd.DataFrame(price_rows)
+    chart_data = df_goods.set_index("상품")[
+        ["매수가 (구매)", f"현 도시 판매가 ({cur_city})"]
+    ]
     st.bar_chart(chart_data)
+    st.dataframe(df_goods, use_container_width=True, hide_index=True)
+
+    # ── 타 도시 판매가 비교표 ────────────────────────────────────────────
+    with st.expander("🌍 도시별 판매가 비교 보기 (무역 루트 참고용)"):
+        compare_good = st.selectbox(
+            "비교할 상품 선택",
+            [g["name"] for g in goods],
+            key="compare_good"
+        )
+        sel_g = next(g for g in goods if g["name"] == compare_good)
+        compare_rows = []
+        for c in CITIES:
+            sp = get_sell_price(compare_good, c)
+            pnl = sp - sel_g["buy_price"]
+            pnl_rate = round(pnl / sel_g["buy_price"] * 100, 1)
+            compare_rows.append({
+                "판매 도시": f"{CITY_INFO[c]['flag']} {c}",
+                "판매가": format_won(sp),
+                "손익": f"{'🟢 +' if pnl >= 0 else '🔴 '}{format_won(abs(pnl))}",
+                "손익률": f"{'▲' if pnl_rate >= 0 else '▼'} {abs(pnl_rate)}%",
+                "추천": "⭐ 강추" if pnl_rate >= 40 else ("👍 추천" if pnl_rate >= 15 else ("❌ 손해" if pnl_rate < 0 else "보통")),
+            })
+        st.dataframe(pd.DataFrame(compare_rows), use_container_width=True, hide_index=True)
+        st.caption(f"💡 {compare_good}의 매수가: {format_won(sel_g['buy_price'])} (구매 도시: {sel_g['city']})")
 
     st.dataframe(df_goods, use_container_width=True, hide_index=True)
 
@@ -605,41 +780,91 @@ def tab_trade(sid):
             st.rerun()
 
     st.markdown("---")
+       st.markdown("---")
     st.markdown("### 💰 매도 (판매)")
 
     inv_rows = get_inventory(sid)
-    city_inv = [i for i in inv_rows]  # 모든 재고 판매 가능 (어디서 샀든)
-    if not city_inv:
-        st.info("보유 화물이 없습니다.")
+    if not inv_rows:
+        st.info("📦 보유 화물이 없습니다. 먼저 다른 도시에서 무역품을 구매하세요!")
         return
 
-    sell_options = {f"{i['good_name']} ({i['city']}에서 구매, {i['quantity']}개 보유)": i for i in city_inv}
-    sel_sell_label = st.selectbox("판매할 상품", list(sell_options.keys()), key="sell_sel")
+    sell_options = {
+        f"{i['good_name']} | 구매도시: {i['city']} | {i['quantity']}개 보유 | "
+        f"평균매수가: {format_won(i['avg_price'])}": i
+        for i in inv_rows
+    }
+    sel_sell_label = st.selectbox(
+        "판매할 상품 선택",
+        list(sell_options.keys()),
+        key="sell_sel"
+    )
     sel_inv = sell_options[sel_sell_label]
 
-    sell_qty = st.number_input("판매 수량", min_value=1, max_value=sel_inv["quantity"], value=1, key="sell_qty")
+    sell_qty = st.number_input(
+        "판매 수량",
+        min_value=1,
+        max_value=sel_inv["quantity"],
+        value=1,
+        key="sell_qty"
+    )
 
-    # 판매 가격은 현재 도시 기준
-    sell_good = fetchone("SELECT sell_price FROM goods WHERE name=? AND city=?",
-                         (sel_inv["good_name"], cur_city))
-    if not sell_good:
-        # 다른 도시 상품도 현재 도시에서 거래 가능 (교역)
-        sell_good = fetchone("SELECT sell_price FROM goods WHERE name=?", (sel_inv["good_name"],))
-
-    if sell_good:
-        base_revenue = sell_good["sell_price"] * sell_qty
-    else:
-        base_revenue = sel_inv["avg_price"] * sell_qty  # fallback
-
+    # ── 현재 도시 판매가 계산 (도시별 차등 적용) ─────────────────────────
+    sell_price_here = get_sell_price(sel_inv["good_name"], cur_city)
+    base_revenue    = sell_price_here * sell_qty
     tariff_fee_sell = int(base_revenue * tariff_rate)
-    net_revenue = base_revenue - tariff_fee_sell
-    profit = net_revenue - sel_inv["avg_price"] * sell_qty
+    net_revenue     = base_revenue - tariff_fee_sell
+    cost_basis      = sel_inv["avg_price"] * sell_qty
+    profit          = net_revenue - cost_basis
+    profit_rate     = round(profit / cost_basis * 100, 1) if cost_basis > 0 else 0
+
+    # ── 구매 도시 vs 현재 도시 판매가 비교 안내 ────────────────────────
+    home_sell_price = get_sell_price(sel_inv["good_name"], sel_inv["city"])
+
+    if cur_city == sel_inv["city"]:
+        location_msg = (
+            f"⚠️ **구매한 도시({cur_city})에서 되팔면 손해입니다!**  \n"
+            f"다른 도시로 이동해서 판매하면 더 높은 가격을 받을 수 있어요.  \n"
+            f"현재 도시 판매가: {format_won(sell_price_here)} "
+            f"(매수가 {format_won(sel_inv['avg_price'])}의 {round(sell_price_here/sel_inv['avg_price']*100)}%)"
+        )
+        st.warning(location_msg)
+    else:
+        location_msg = (
+            f"📍 구매 도시({sel_inv['city']}) 판매가: {format_won(home_sell_price)}  \n"
+            f"📍 현재 도시({cur_city}) 판매가: **{format_won(sell_price_here)}**"
+        )
+        if sell_price_here > home_sell_price:
+            st.success(f"✅ 구매 도시보다 **{format_won(sell_price_here - home_sell_price)} 더 비싸게** 팔 수 있습니다! {location_msg}")
+        else:
+            st.info(location_msg)
+
+    # ── 거래 요약 ────────────────────────────────────────────────────────
+    col_s1, col_s2, col_s3 = st.columns(3)
+    with col_s1:
+        st.metric("현재 도시 판매가", format_won(sell_price_here))
+    with col_s2:
+        st.metric("관세 공제", f"-{format_won(tariff_fee_sell)}" if tariff_fee_sell > 0 else "없음")
+    with col_s3:
+        st.metric(
+            "예상 손익",
+            f"{'🟢 +' if profit >= 0 else '🔴 '}{format_won(profit)}",
+            delta=f"{'+' if profit_rate >= 0 else ''}{profit_rate}%"
+        )
 
     st.info(
-        f"📦 상품: **{sel_inv['good_name']}** | 판매가: {format_won(sell_good['sell_price'] if sell_good else sel_inv['avg_price'])} × {sell_qty}개\n\n"
-        f"🧾 소계: {format_won(base_revenue)} - 관세: {format_won(tariff_fee_sell)} = **실수령: {format_won(net_revenue)}**\n\n"
-        f"📈 예상 손익: **{format_won(profit)}** ({'🔴 손실' if profit < 0 else '🟢 이익'})"
+        f"📦 **{sel_inv['good_name']}** {sell_qty}개  \n"
+        f"🧾 소계: {format_won(base_revenue)} "
+        f"- 관세: {format_won(tariff_fee_sell)} "
+        f"= **실수령: {format_won(net_revenue)}**  \n"
+        f"📈 총 손익: **{'🟢 +' if profit >= 0 else '🔴 '}{format_won(profit)}** "
+        f"({'이익' if profit >= 0 else '손실'})"
     )
+
+    if profit < 0:
+        st.error(
+            f"🔴 이 거래는 **{format_won(abs(profit))} 손실**이 발생합니다.  \n"
+            f"다른 도시로 이동하면 더 유리하게 판매할 수 있습니다!"
+        )
 
     if st.button("✅ 매도 확정", key="do_sell"):
         # 잔고 증가
@@ -647,24 +872,38 @@ def tab_trade(sid):
         # 재고 감소
         new_qty = sel_inv["quantity"] - sell_qty
         if new_qty <= 0:
-            run("DELETE FROM inventory WHERE student_id=? AND good_name=? AND city=?",
-                (sid, sel_inv["good_name"], sel_inv["city"]))
+            run(
+                "DELETE FROM inventory WHERE student_id=? AND good_name=? AND city=?",
+                (sid, sel_inv["good_name"], sel_inv["city"])
+            )
         else:
-            run("UPDATE inventory SET quantity=? WHERE student_id=? AND good_name=? AND city=?",
-                (new_qty, sid, sel_inv["good_name"], sel_inv["city"]))
+            run(
+                "UPDATE inventory SET quantity=? WHERE student_id=? AND good_name=? AND city=?",
+                (new_qty, sid, sel_inv["good_name"], sel_inv["city"])
+            )
         # 도시 누적 투자금
-        run("UPDATE cities SET invest_total=invest_total+? WHERE name=?", (base_revenue, cur_city))
-        # 관세 → 영주
+        run("UPDATE cities SET invest_total=invest_total+? WHERE name=?",
+            (base_revenue, cur_city))
+        # 관세 → 영주 지급
         if tariff_fee_sell > 0 and lord_id:
-            run("UPDATE users SET money=money+?, tariff_income=tariff_income+? WHERE student_id=?",
-                (tariff_fee_sell, tariff_fee_sell, lord_id))
-            add_log(lord_id, f"💰 관세 수입 {format_won(tariff_fee_sell)} ({sid}번 학생 → {cur_city})")
+            run(
+                "UPDATE users SET money=money+?, tariff_income=tariff_income+? WHERE student_id=?",
+                (tariff_fee_sell, tariff_fee_sell, lord_id)
+            )
+            add_log(lord_id,
+                    f"💰 관세 수입 {format_won(tariff_fee_sell)} ({sid}번 학생 → {cur_city})")
         # 레벨업 체크
         check_city_levelup(cur_city)
-        add_log(sid, f"💰 {cur_city}에서 {sel_inv['good_name']} {sell_qty}개 매도 (실수령: {format_won(net_revenue)})")
-        st.success(f"✅ {sel_inv['good_name']} {sell_qty}개 판매 완료! 실수령: {format_won(net_revenue)}")
+        add_log(
+            sid,
+            f"💰 {cur_city}에서 {sel_inv['good_name']} {sell_qty}개 매도 "
+            f"(실수령: {format_won(net_revenue)}, 손익: {'+' if profit>=0 else ''}{format_won(profit)})"
+        )
+        if profit >= 0:
+            st.success(f"✅ 판매 완료! 실수령 {format_won(net_revenue)} (이익: +{format_won(profit)})")
+        else:
+            st.warning(f"⚠️ 판매 완료. 실수령 {format_won(net_revenue)} (손실: {format_won(profit)})")
         st.rerun()
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 7. 학생 탭 3: 도시 투자
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -724,9 +963,7 @@ def tab_invest(sid):
     if shares_all:
         df_sh = pd.DataFrame([{"학생 번호": s["student_id"], "보유 주식 수": s["amount"],
                                 "지분율(%)": round(s["amount"] / MAX_SHARES * 100, 1)} for s in shares_all])
-        # ↑ 위 코드에서 tab_invest 함수 내 st.dataframe 부분부터 이어집니다 ↑
-# df_sh = pd.DataFrame([...]) 다음 줄부터 붙여넣기 하세요
-
+       
         st.dataframe(df_sh, use_container_width=True, hide_index=True)
 
     st.markdown("---")
