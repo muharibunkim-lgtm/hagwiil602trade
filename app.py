@@ -780,7 +780,6 @@ def tab_trade(sid):
             st.rerun()
 
     st.markdown("---")
-       st.markdown("---")
     st.markdown("### 💰 매도 (판매)")
 
     inv_rows = get_inventory(sid)
