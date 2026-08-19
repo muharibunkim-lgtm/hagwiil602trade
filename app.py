@@ -1,0 +1,1324 @@
+# app.py  ─────────────────────────────────────────────────────────────────────
+# 대항해시대 스타일 세계 무역 & 영토 점령 보드게임 (초등 6학년용)
+# Streamlit + SQLite3 단일 파일 구현
+# ─────────────────────────────────────────────────────────────────────────────
+
+import streamlit as st
+import sqlite3
+import pandas as pd
+import random
+import io
+from datetime import datetime
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. 상수 / 게임 데이터 정의
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DB_PATH = "trade_game.db"
+INITIAL_MONEY = 1_000_000       # 초기 자금 100만 원
+SHARE_PRICE   = 50_000          # 주당 5만 원
+MAX_SHARES    = 100             # 도시당 최대 주식 수
+LORD_MIN_SHARES = 20            # 영주가 되기 위한 최소 주식 수
+TARIFF_RATE   = 0.10            # 관세율 10 %
+INSURANCE_COST = 10_000         # 무역 보험료 1만 원
+PIRATE_LOSS   = 0.30            # 해적 화물 손실 30 %
+
+# 도시 목록
+CITIES = ["상하이", "뭄바이", "런던", "카이로", "뉴욕", "상파울루", "시드니", "레이캬비크"]
+
+CITY_INFO = {
+    "상하이":   {"region": "🌏 아시아",      "flag": "🇨🇳", "level_up": [500_000, 1_500_000]},
+    "뭄바이":   {"region": "🌏 아시아",      "flag": "🇮🇳", "level_up": [500_000, 1_500_000]},
+    "런던":     {"region": "🌍 유럽",        "flag": "🇬🇧", "level_up": [600_000, 1_800_000]},
+    "카이로":   {"region": "🌍 아프리카",    "flag": "🇪🇬", "level_up": [400_000, 1_200_000]},
+    "뉴욕":     {"region": "🌎 북아메리카",  "flag": "🇺🇸", "level_up": [700_000, 2_000_000]},
+    "상파울루": {"region": "🌎 남아메리카",  "flag": "🇧🇷", "level_up": [400_000, 1_200_000]},
+    "시드니":   {"region": "🌏 오세아니아",  "flag": "🇦🇺", "level_up": [500_000, 1_500_000]},
+    "레이캬비크":{"region":"🧊 북극권",      "flag": "🇮🇸", "level_up": [500_000, 1_500_000]},
+}
+
+# 무역품 정의: (도시, 상품명, 매수가, 매도가, 해금레벨)
+GOODS_DATA = [
+    # 상하이
+    ("상하이", "비단",         80_000,  120_000, 1),
+    ("상하이", "도자기",       60_000,   90_000, 1),
+    ("상하이", "첨단섬유",    200_000,  320_000, 2),
+    ("상하이", "AI칩",        500_000,  800_000, 3),
+    # 뭄바이
+    ("뭄바이", "향신료",       50_000,   80_000, 1),
+    ("뭄바이", "홍차",         40_000,   65_000, 1),
+    ("뭄바이", "보석원석",    150_000,  240_000, 2),
+    ("뭄바이", "의약원료",    400_000,  640_000, 3),
+    # 런던
+    ("런던",   "정밀기계",    200_000,  300_000, 1),
+    ("런던",   "위스키",      100_000,  160_000, 1),
+    ("런던",   "항공부품",    400_000,  640_000, 2),
+    ("런던",   "양자컴퓨터", 900_000, 1_440_000, 3),
+    # 카이로
+    ("카이로", "면화",         40_000,   65_000, 1),
+    ("카이로", "석유",        120_000,  190_000, 1),
+    ("카이로", "태양광패널",  250_000,  400_000, 2),
+    ("카이로", "희토류",      600_000,  960_000, 3),
+    # 뉴욕
+    ("뉴욕",   "IT기기",      300_000,  450_000, 1),
+    ("뉴욕",   "금융상품",    500_000,  750_000, 1),
+    ("뉴욕",   "우주부품",    700_000, 1_100_000, 2),
+    ("뉴욕",   "바이오칩",  1_000_000, 1_600_000, 3),
+    # 상파울루
+    ("상파울루","커피원두",    50_000,   80_000, 1),
+    ("상파울루","카카오",      60_000,   95_000, 1),
+    ("상파울루","바이오연료", 180_000,  290_000, 2),
+    ("상파울루","열대의약품", 450_000,  720_000, 3),
+    # 시드니
+    ("시드니", "양모",         70_000,  110_000, 1),
+    ("시드니", "철광석",      100_000,  160_000, 1),
+    ("시드니", "리튬배터리",  300_000,  480_000, 2),
+    ("시드니", "핵융합소재",  800_000, 1_280_000, 3),
+    # 레이캬비크
+    ("레이캬비크","수산물통조림", 40_000, 65_000, 1),
+    ("레이캬비크","신재생에너지",150_000, 240_000, 1),
+    ("레이캬비크","희귀광물",  350_000,  560_000, 2),
+    ("레이캬비크","친환경수소", 700_000, 1_120_000, 3),
+]
+
+# 도시 간 거리 등급: 1=근거리(5만), 2=중거리(10만), 3=장거리(20만)
+DISTANCE = {
+    ("상하이",   "뭄바이"):    2,
+    ("상하이",   "런던"):      3,
+    ("상하이",   "카이로"):    3,
+    ("상하이",   "뉴욕"):      3,
+    ("상하이",   "상파울루"):  3,
+    ("상하이",   "시드니"):    2,
+    ("상하이",   "레이캬비크"):3,
+    ("뭄바이",   "런던"):      2,
+    ("뭄바이",   "카이로"):    1,
+    ("뭄바이",   "뉴욕"):      3,
+    ("뭄바이",   "상파울루"):  3,
+    ("뭄바이",   "시드니"):    2,
+    ("뭄바이",   "레이캬비크"):3,
+    ("런던",     "카이로"):    2,
+    ("런던",     "뉴욕"):      2,
+    ("런던",     "상파울루"):  3,
+    ("런던",     "시드니"):    3,
+    ("런던",     "레이캬비크"):1,
+    ("카이로",   "뉴욕"):      3,
+    ("카이로",   "상파울루"):  3,
+    ("카이로",   "시드니"):    3,
+    ("카이로",   "레이캬비크"):3,
+    ("뉴욕",     "상파울루"):  2,
+    ("뉴욕",     "시드니"):    3,
+    ("뉴욕",     "레이캬비크"):2,
+    ("상파울루", "시드니"):    3,
+    ("상파울루", "레이캬비크"):3,
+    ("시드니",   "레이캬비크"):3,
+}
+MOVE_COST = {1: 50_000, 2: 100_000, 3: 200_000}
+
+def get_distance(c1, c2):
+    """두 도시 간 거리 등급 반환"""
+    key = (c1, c2) if (c1, c2) in DISTANCE else (c2, c1)
+    return DISTANCE.get(key, 3)
+
+def get_move_cost(c1, c2):
+    """두 도시 간 이동 비용 반환"""
+    return MOVE_COST[get_distance(c1, c2)]
+
+# 운하 봉쇄 이벤트용 캐시
+if "canal_blocked" not in st.session_state:
+    st.session_state.canal_blocked = {}   # {(도시1, 도시2): True}
+if "fta_cities" not in st.session_state:
+    st.session_state.fta_cities = set()   # 관세 0% 도시
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. DB 초기화 / 공통 DB 함수
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@st.cache_resource
+def get_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def run(sql, params=()):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    return cur
+
+def fetchall(sql, params=()):
+    return get_conn().execute(sql, params).fetchall()
+
+def fetchone(sql, params=()):
+    return get_conn().execute(sql, params).fetchone()
+
+def init_db():
+    """DB 테이블 생성 및 초기 데이터 삽입"""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ── users ──────────────────────────────────────────────────────────────
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        student_id   INTEGER PRIMARY KEY,
+        password     TEXT    DEFAULT '0000',
+        money        INTEGER DEFAULT 1000000,
+        location     TEXT    DEFAULT '상하이',
+        insurance    INTEGER DEFAULT 0,
+        tariff_income INTEGER DEFAULT 0
+    )""")
+
+    # ── cities ─────────────────────────────────────────────────────────────
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS cities (
+        name         TEXT PRIMARY KEY,
+        level        INTEGER DEFAULT 1,
+        invest_total INTEGER DEFAULT 0
+    )""")
+
+    # ── goods ──────────────────────────────────────────────────────────────
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS goods (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        city         TEXT,
+        name         TEXT,
+        buy_price    INTEGER,
+        sell_price   INTEGER,
+        unlock_level INTEGER DEFAULT 1
+    )""")
+
+    # ── shares ─────────────────────────────────────────────────────────────
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS shares (
+        student_id  INTEGER,
+        city        TEXT,
+        amount      INTEGER DEFAULT 0,
+        PRIMARY KEY (student_id, city)
+    )""")
+
+    # ── inventory ──────────────────────────────────────────────────────────
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS inventory (
+        student_id  INTEGER,
+        good_name   TEXT,
+        city        TEXT,
+        quantity    INTEGER DEFAULT 0,
+        avg_price   INTEGER DEFAULT 0,
+        PRIMARY KEY (student_id, good_name, city)
+    )""")
+
+    # ── event_log ──────────────────────────────────────────────────────────
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS event_log (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts        TEXT,
+        student_id INTEGER,
+        message   TEXT
+    )""")
+
+    conn.commit()
+
+    # ── 초기 데이터 삽입 (이미 있으면 무시) ───────────────────────────────
+
+    # 학생 1 ~ 23
+    for sid in range(1, 24):
+        cur.execute("INSERT OR IGNORE INTO users (student_id) VALUES (?)", (sid,))
+
+    # 도시
+    for city in CITIES:
+        cur.execute("INSERT OR IGNORE INTO cities (name) VALUES (?)", (city,))
+
+    # 무역품
+    if not fetchone("SELECT 1 FROM goods LIMIT 1"):
+        for row in GOODS_DATA:
+            cur.execute(
+                "INSERT INTO goods (city, name, buy_price, sell_price, unlock_level) VALUES (?,?,?,?,?)",
+                row
+            )
+
+    # 지분 (student × city 전체 초기화)
+    for sid in range(1, 24):
+        for city in CITIES:
+            cur.execute("INSERT OR IGNORE INTO shares (student_id, city, amount) VALUES (?,?,0)", (sid, city))
+
+    conn.commit()
+
+def reset_db():
+    """게임 데이터 전체 초기화"""
+    run("UPDATE users SET money=1000000, location='상하이', insurance=0, tariff_income=0, password='0000'")
+    run("UPDATE cities SET level=1, invest_total=0")
+    run("UPDATE shares SET amount=0")
+    run("DELETE FROM inventory")
+    run("DELETE FROM event_log")
+    # 가격 리셋
+    run("DELETE FROM goods")
+    conn = get_conn()
+    cur = conn.cursor()
+    for row in GOODS_DATA:
+        cur.execute(
+            "INSERT INTO goods (city, name, buy_price, sell_price, unlock_level) VALUES (?,?,?,?,?)",
+            row
+        )
+    conn.commit()
+    st.session_state.canal_blocked = {}
+    st.session_state.fta_cities = set()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. 보조 / 게임 로직 함수
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def get_user(sid):
+    return fetchone("SELECT * FROM users WHERE student_id=?", (sid,))
+
+def get_city(name):
+    return fetchone("SELECT * FROM cities WHERE name=?", (name,))
+
+def get_goods(city, level):
+    return fetchall(
+        "SELECT * FROM goods WHERE city=? AND unlock_level<=? ORDER BY unlock_level",
+        (city, level)
+    )
+
+def get_shares(sid, city):
+    row = fetchone("SELECT amount FROM shares WHERE student_id=? AND city=?", (sid, city))
+    return row["amount"] if row else 0
+
+def get_city_shares_all(city):
+    return fetchall(
+        "SELECT student_id, amount FROM shares WHERE city=? AND amount>0 ORDER BY amount DESC",
+        (city,)
+    )
+
+def get_lord(city):
+    """영주: 최고 지분 >= 20주 학생, 없으면 None"""
+    rows = get_city_shares_all(city)
+    if rows and rows[0]["amount"] >= LORD_MIN_SHARES:
+        return rows[0]["student_id"]
+    return None
+
+def get_inventory(sid):
+    return fetchall(
+        "SELECT * FROM inventory WHERE student_id=? AND quantity>0",
+        (sid,)
+    )
+
+def add_log(sid, msg):
+    ts = datetime.now().strftime("%H:%M:%S")
+    run("INSERT INTO event_log (ts, student_id, message) VALUES (?,?,?)", (ts, sid, msg))
+
+def check_city_levelup(city_name):
+    """누적 투자금에 따라 도시 레벨업 처리"""
+    city = get_city(city_name)
+    info = CITY_INFO[city_name]
+    lv = city["level"]
+    inv = city["invest_total"]
+    if lv == 1 and inv >= info["level_up"][0]:
+        run("UPDATE cities SET level=2 WHERE name=?", (city_name,))
+        add_log(0, f"🎉 [{city_name}] 이 Lv.2 로 레벨업! 새 무역품 해금!")
+    elif lv == 2 and inv >= info["level_up"][1]:
+        run("UPDATE cities SET level=3 WHERE name=?", (city_name,))
+        add_log(0, f"🎉 [{city_name}] 이 Lv.3 으로 레벨업! 최고급 무역품 해금!")
+
+def total_assets(sid):
+    """학생 총 자산 = 잔고 + 재고 평가액 + 지분 평가액"""
+    user = get_user(sid)
+    total = user["money"]
+    # 재고
+    for inv in get_inventory(sid):
+        g = fetchone("SELECT sell_price FROM goods WHERE name=? AND city=?",
+                     (inv["good_name"], inv["city"]))
+        if g:
+            total += g["sell_price"] * inv["quantity"]
+    # 지분
+    shares_rows = fetchall("SELECT city, amount FROM shares WHERE student_id=?", (sid,))
+    for s in shares_rows:
+        total += s["amount"] * SHARE_PRICE
+    return total
+
+def format_won(n):
+    return f"₩{n:,}"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. 사이드바 로그인
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def sidebar_login():
+    st.sidebar.markdown("## 🌊 대항해시대 보드게임")
+    st.sidebar.markdown("---")
+    role = st.sidebar.radio("로그인 유형", ["👨‍🎓 학생", "👩‍🏫 교사 관리자"])
+
+    if role == "👩‍🏫 교사 관리자":
+        pw = st.sidebar.text_input("관리자 비밀번호", type="password", key="admin_pw")
+        if st.sidebar.button("로그인", key="admin_login"):
+            if pw == "1234":
+                st.session_state.logged_in = "admin"
+                st.session_state.student_id = None
+                st.rerun()
+            else:
+                st.sidebar.error("비밀번호가 틀렸습니다.")
+    else:
+        sid = st.sidebar.selectbox("학생 번호 선택", list(range(1, 24)),
+                                   format_func=lambda x: f"{x}번 학생", key="sel_sid")
+        pw = st.sidebar.text_input("비밀번호 (초기: 0000)", type="password", key="stu_pw")
+        if st.sidebar.button("로그인", key="stu_login"):
+            db_pw = fetchone("SELECT password FROM users WHERE student_id=?", (sid,))
+            if db_pw and db_pw["password"] == pw:
+                st.session_state.logged_in = "student"
+                st.session_state.student_id = sid
+                st.rerun()
+            else:
+                st.sidebar.error("비밀번호가 틀렸습니다.")
+
+    # 상태 표시
+    if st.session_state.get("logged_in") == "student":
+        sid = st.session_state.student_id
+        user = get_user(sid)
+        st.sidebar.success(f"✅ {sid}번 학생 로그인 중")
+        st.sidebar.info(
+            f"📍 현재 위치: **{user['location']}**\n\n"
+            f"💰 잔고: **{format_won(user['money'])}**"
+        )
+        if st.sidebar.button("🚪 로그아웃"):
+            st.session_state.logged_in = None
+            st.rerun()
+
+    elif st.session_state.get("logged_in") == "admin":
+        st.sidebar.success("✅ 교사 관리자 로그인 중")
+        if st.sidebar.button("🚪 로그아웃"):
+            st.session_state.logged_in = None
+            st.rerun()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. 학생 탭 1: 세계 지도 & 이동
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def tab_map(sid):
+    user = get_user(sid)
+    cur_city = user["location"]
+    has_insurance = bool(user["insurance"])
+
+    st.subheader(f"🗺️ 현재 위치: {CITY_INFO[cur_city]['flag']} **{cur_city}** ({CITY_INFO[cur_city]['region']})")
+    st.markdown("---")
+
+    # 무역 보험 가입
+    col_ins1, col_ins2 = st.columns([3, 1])
+    with col_ins1:
+        if has_insurance:
+            st.success("🛡️ 무역 보험 가입 완료 (해적 출몰 시 화물 100% 보상)")
+        else:
+            st.warning("⚠️ 무역 보험 미가입 상태 (해적 출몰 시 화물 30% 손실)")
+    with col_ins2:
+        if not has_insurance:
+            if st.button(f"보험 가입 ({format_won(INSURANCE_COST)})", key="buy_ins"):
+                if user["money"] < INSURANCE_COST:
+                    st.error("잔고가 부족합니다!")
+                else:
+                    run("UPDATE users SET money=money-?, insurance=1 WHERE student_id=?",
+                        (INSURANCE_COST, sid))
+                    add_log(sid, "🛡️ 무역 보험 가입")
+                    st.success("무역 보험에 가입했습니다!")
+                    st.rerun()
+        else:
+            if st.button("보험 해지", key="cancel_ins"):
+                run("UPDATE users SET insurance=0 WHERE student_id=?", (sid,))
+                add_log(sid, "보험 해지")
+                st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 🚢 이동할 도시 선택")
+
+    # 도시를 3열로 배치
+    other_cities = [c for c in CITIES if c != cur_city]
+    cols = st.columns(3)
+    for i, city in enumerate(other_cities):
+        base_cost = get_move_cost(cur_city, city)
+        # 운하 봉쇄 적용 여부
+        key = (cur_city, city) if (cur_city, city) in st.session_state.canal_blocked else (city, cur_city)
+        if key in st.session_state.canal_blocked and st.session_state.canal_blocked[key]:
+            real_cost = base_cost * 2
+            cost_label = f"⛔ 봉쇄 {format_won(real_cost)}"
+        else:
+            real_cost = base_cost
+            dist = get_distance(cur_city, city)
+            dist_emoji = ["", "🟢 근거리", "🟡 중거리", "🔴 장거리"][dist]
+            cost_label = f"{dist_emoji} {format_won(real_cost)}"
+
+        info = CITY_INFO[city]
+        with cols[i % 3]:
+            st.markdown(f"**{info['flag']} {city}**")
+            st.caption(f"{info['region']} | 이동비용: {cost_label}")
+            if st.button(f"✈️ {city}로 이동", key=f"move_{city}"):
+                if user["money"] < real_cost:
+                    st.error("이동 비용이 부족합니다!")
+                else:
+                    # 이동 비용 차감
+                    run("UPDATE users SET money=money-?, location=? WHERE student_id=?",
+                        (real_cost, city, sid))
+                    add_log(sid, f"🚢 {cur_city} → {city} 이동 (비용: {format_won(real_cost)})")
+
+                    # 리스크 이벤트 (20% 확률)
+                    event_msg = ""
+                    if random.random() < 0.20:
+                        event = random.choice(["pirate", "typhoon", "canal"])
+                        if event == "pirate":
+                            inv_rows = get_inventory(sid)
+                            if inv_rows:
+                                if has_insurance:
+                                    # 보험 있으면 보상 후 보험 해지
+                                    run("UPDATE users SET insurance=0 WHERE student_id=?", (sid,))
+                                    event_msg = "🏴‍☠️ 해적 출몰! 무역 보험으로 화물 100% 보호됨! (보험 해지)"
+                                else:
+                                    # 화물 30% 손실
+                                    for inv in inv_rows:
+                                        lost = max(1, int(inv["quantity"] * PIRATE_LOSS))
+                                        new_qty = inv["quantity"] - lost
+                                        if new_qty <= 0:
+                                            run("DELETE FROM inventory WHERE student_id=? AND good_name=? AND city=?",
+                                                (sid, inv["good_name"], inv["city"]))
+                                        else:
+                                            run("UPDATE inventory SET quantity=? WHERE student_id=? AND good_name=? AND city=?",
+                                                (new_qty, sid, inv["good_name"], inv["city"]))
+                                    event_msg = "🏴‍☠️ 해적 출몰! 화물 30% 손실!"
+                            else:
+                                event_msg = "🏴‍☠️ 해적 출몰! 하지만 화물이 없어 피해 없음."
+                        elif event == "typhoon":
+                            # 도착 도시 무역품 가격 2배
+                            run("UPDATE goods SET buy_price=buy_price*2, sell_price=sell_price*2 WHERE city=?", (city,))
+                            event_msg = f"🌀 태풍 발생! {city}의 무역품 가격이 2배로 폭등!"
+                        elif event == "canal":
+                            # 이미 이동 후이므로 다음 항로 봉쇄
+                            key2 = (city, cur_city)
+                            st.session_state.canal_blocked[key2] = True
+                            event_msg = f"⛔ 운하 봉쇄! {city} ↔ {cur_city} 항로 이동 비용 2배!"
+
+                    if event_msg:
+                        add_log(sid, event_msg)
+                        st.warning(event_msg)
+                    else:
+                        st.success(f"✅ {city}에 도착했습니다!")
+                    st.rerun()
+
+    # 최근 이벤트 로그
+    st.markdown("---")
+    st.markdown("### 📋 최근 항해 기록")
+    logs = fetchall(
+        "SELECT ts, message FROM event_log WHERE student_id=? ORDER BY id DESC LIMIT 10",
+        (sid,)
+    )
+    if logs:
+        for lg in logs:
+            st.caption(f"[{lg['ts']}] {lg['message']}")
+    else:
+        st.caption("아직 기록이 없습니다.")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. 학생 탭 2: 무역 시장
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def tab_trade(sid):
+    user = get_user(sid)
+    cur_city = user["location"]
+    city_row = get_city(cur_city)
+    city_level = city_row["level"]
+
+    lord_id = get_lord(cur_city)
+    fta_active = cur_city in st.session_state.fta_cities
+    tariff_rate = 0.0 if fta_active else (TARIFF_RATE if lord_id and lord_id != sid else 0.0)
+
+    # 영주 정보 표시
+    info_col1, info_col2, info_col3 = st.columns(3)
+    with info_col1:
+        st.metric("🏙️ 도시", f"{CITY_INFO[cur_city]['flag']} {cur_city}")
+    with info_col2:
+        st.metric("⚔️ 영주", f"{lord_id}번 학생" if lord_id else "없음 (공석)")
+    with info_col3:
+        tariff_label = "0% (FTA)" if fta_active else (f"{int(tariff_rate*100)}%" if tariff_rate > 0 else "0% (영주 없음)")
+        st.metric("💸 관세율", tariff_label)
+
+    st.markdown("---")
+
+    goods = get_goods(cur_city, city_level)
+    if not goods:
+        st.info("거래 가능한 무역품이 없습니다.")
+        return
+
+    # 가격 차트 (바 차트)
+    df_goods = pd.DataFrame([{
+        "상품": g["name"],
+        "매수가(구매)": g["buy_price"],
+        "매도가(판매)": g["sell_price"],
+        "해금 레벨": f"Lv.{g['unlock_level']}"
+    } for g in goods])
+
+    st.markdown("### 📊 현재 도시 무역품 가격")
+    chart_data = df_goods.set_index("상품")[["매수가(구매)", "매도가(판매)"]]
+    st.bar_chart(chart_data)
+
+    st.dataframe(df_goods, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("### 🛒 매수 (구매)")
+
+    good_names = [g["name"] for g in goods]
+    sel_buy = st.selectbox("구매할 상품", good_names, key="buy_sel")
+    sel_good = next(g for g in goods if g["name"] == sel_buy)
+    buy_qty = st.number_input("수량", min_value=1, max_value=100, value=1, key="buy_qty")
+    base_cost = sel_good["buy_price"] * buy_qty
+    tariff_fee = int(base_cost * tariff_rate)
+    total_cost = base_cost + tariff_fee
+
+    st.info(
+        f"📦 상품: **{sel_buy}** | 단가: {format_won(sel_good['buy_price'])} × {buy_qty}개\n\n"
+        f"🧾 소계: {format_won(base_cost)} + 관세: {format_won(tariff_fee)} = **합계: {format_won(total_cost)}**"
+    )
+
+    if st.button("✅ 매수 확정", key="do_buy"):
+        if user["money"] < total_cost:
+            st.error("잔고가 부족합니다!")
+        else:
+            # 잔고 차감
+            run("UPDATE users SET money=money-? WHERE student_id=?", (total_cost, sid))
+            # 재고 갱신 (가중평균 단가)
+            existing = fetchone(
+                "SELECT quantity, avg_price FROM inventory WHERE student_id=? AND good_name=? AND city=?",
+                (sid, sel_buy, cur_city)
+            )
+            if existing and existing["quantity"] > 0:
+                total_qty = existing["quantity"] + buy_qty
+                new_avg = (existing["quantity"] * existing["avg_price"] + buy_qty * sel_good["buy_price"]) // total_qty
+                run("UPDATE inventory SET quantity=?, avg_price=? WHERE student_id=? AND good_name=? AND city=?",
+                    (total_qty, new_avg, sid, sel_buy, cur_city))
+            else:
+                run("INSERT OR REPLACE INTO inventory (student_id, good_name, city, quantity, avg_price) VALUES (?,?,?,?,?)",
+                    (sid, sel_buy, cur_city, buy_qty, sel_good["buy_price"]))
+            # 도시 누적 투자금 갱신
+            run("UPDATE cities SET invest_total=invest_total+? WHERE name=?", (base_cost, cur_city))
+            # 관세 → 영주 지급
+            if tariff_fee > 0 and lord_id:
+                run("UPDATE users SET money=money+?, tariff_income=tariff_income+? WHERE student_id=?",
+                    (tariff_fee, tariff_fee, lord_id))
+                add_log(lord_id, f"💰 관세 수입 {format_won(tariff_fee)} ({sid}번 학생 → {cur_city})")
+            # 레벨업 체크
+            check_city_levelup(cur_city)
+            add_log(sid, f"🛒 {cur_city}에서 {sel_buy} {buy_qty}개 매수 (총 {format_won(total_cost)})")
+            st.success(f"✅ {sel_buy} {buy_qty}개 구매 완료!")
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 💰 매도 (판매)")
+
+    inv_rows = get_inventory(sid)
+    city_inv = [i for i in inv_rows]  # 모든 재고 판매 가능 (어디서 샀든)
+    if not city_inv:
+        st.info("보유 화물이 없습니다.")
+        return
+
+    sell_options = {f"{i['good_name']} ({i['city']}에서 구매, {i['quantity']}개 보유)": i for i in city_inv}
+    sel_sell_label = st.selectbox("판매할 상품", list(sell_options.keys()), key="sell_sel")
+    sel_inv = sell_options[sel_sell_label]
+
+    sell_qty = st.number_input("판매 수량", min_value=1, max_value=sel_inv["quantity"], value=1, key="sell_qty")
+
+    # 판매 가격은 현재 도시 기준
+    sell_good = fetchone("SELECT sell_price FROM goods WHERE name=? AND city=?",
+                         (sel_inv["good_name"], cur_city))
+    if not sell_good:
+        # 다른 도시 상품도 현재 도시에서 거래 가능 (교역)
+        sell_good = fetchone("SELECT sell_price FROM goods WHERE name=?", (sel_inv["good_name"],))
+
+    if sell_good:
+        base_revenue = sell_good["sell_price"] * sell_qty
+    else:
+        base_revenue = sel_inv["avg_price"] * sell_qty  # fallback
+
+    tariff_fee_sell = int(base_revenue * tariff_rate)
+    net_revenue = base_revenue - tariff_fee_sell
+    profit = net_revenue - sel_inv["avg_price"] * sell_qty
+
+    st.info(
+        f"📦 상품: **{sel_inv['good_name']}** | 판매가: {format_won(sell_good['sell_price'] if sell_good else sel_inv['avg_price'])} × {sell_qty}개\n\n"
+        f"🧾 소계: {format_won(base_revenue)} - 관세: {format_won(tariff_fee_sell)} = **실수령: {format_won(net_revenue)}**\n\n"
+        f"📈 예상 손익: **{format_won(profit)}** ({'🔴 손실' if profit < 0 else '🟢 이익'})"
+    )
+
+    if st.button("✅ 매도 확정", key="do_sell"):
+        # 잔고 증가
+        run("UPDATE users SET money=money+? WHERE student_id=?", (net_revenue, sid))
+        # 재고 감소
+        new_qty = sel_inv["quantity"] - sell_qty
+        if new_qty <= 0:
+            run("DELETE FROM inventory WHERE student_id=? AND good_name=? AND city=?",
+                (sid, sel_inv["good_name"], sel_inv["city"]))
+        else:
+            run("UPDATE inventory SET quantity=? WHERE student_id=? AND good_name=? AND city=?",
+                (new_qty, sid, sel_inv["good_name"], sel_inv["city"]))
+        # 도시 누적 투자금
+        run("UPDATE cities SET invest_total=invest_total+? WHERE name=?", (base_revenue, cur_city))
+        # 관세 → 영주
+        if tariff_fee_sell > 0 and lord_id:
+            run("UPDATE users SET money=money+?, tariff_income=tariff_income+? WHERE student_id=?",
+                (tariff_fee_sell, tariff_fee_sell, lord_id))
+            add_log(lord_id, f"💰 관세 수입 {format_won(tariff_fee_sell)} ({sid}번 학생 → {cur_city})")
+        # 레벨업 체크
+        check_city_levelup(cur_city)
+        add_log(sid, f"💰 {cur_city}에서 {sel_inv['good_name']} {sell_qty}개 매도 (실수령: {format_won(net_revenue)})")
+        st.success(f"✅ {sel_inv['good_name']} {sell_qty}개 판매 완료! 실수령: {format_won(net_revenue)}")
+        st.rerun()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. 학생 탭 3: 도시 투자
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def tab_invest(sid):
+    user = get_user(sid)
+    cur_city = user["location"]
+    city_row = get_city(cur_city)
+    city_level = city_row["level"]
+    city_invest = city_row["invest_total"]
+    info = CITY_INFO[cur_city]
+
+    # 레벨업 기준
+    thresholds = info["level_up"]  # [Lv1→2 기준, Lv2→3 기준]
+    if city_level == 1:
+        next_threshold = thresholds[0]
+        progress = min(city_invest / next_threshold, 1.0) if next_threshold > 0 else 1.0
+        progress_label = f"Lv.1 → Lv.2: {format_won(city_invest)} / {format_won(next_threshold)}"
+    elif city_level == 2:
+        next_threshold = thresholds[1]
+        progress = min(city_invest / next_threshold, 1.0) if next_threshold > 0 else 1.0
+        progress_label = f"Lv.2 → Lv.3: {format_won(city_invest)} / {format_won(next_threshold)}"
+    else:
+        progress = 1.0
+        progress_label = "🏆 최고 레벨 달성!"
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🏙️ 도시", f"{info['flag']} {cur_city}")
+    with col2:
+        st.metric("📊 도시 레벨", f"Lv.{city_level}")
+    with col3:
+        lord_id = get_lord(cur_city)
+        st.metric("👑 현재 영주", f"{lord_id}번 학생" if lord_id else "공석")
+
+    st.markdown("#### 🏗️ 도시 발전 게이지")
+    st.progress(progress)
+    st.caption(progress_label)
+
+    st.markdown("---")
+    st.markdown("### 📈 지분 현황")
+
+    shares_all = get_city_shares_all(cur_city)
+    total_sold = sum(s["amount"] for s in shares_all)
+    my_shares = get_shares(sid, cur_city)
+    available = MAX_SHARES - total_sold
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.metric("내 보유 지분", f"{my_shares}주")
+    with col_b:
+        st.metric("전체 발행 주식", f"{total_sold} / {MAX_SHARES}주")
+    with col_c:
+        st.metric("잔여 매수 가능", f"{available}주")
+
+    # 지분 상위 표
+    if shares_all:
+        df_sh = pd.DataFrame([{"학생 번호": s["student_id"], "보유 주식 수": s["amount"],
+                                "지분율(%)": round(s["amount"] / MAX_SHARES * 100, 1)} for s in shares_all])
+        # ↑ 위 코드에서 tab_invest 함수 내 st.dataframe 부분부터 이어집니다 ↑
+# df_sh = pd.DataFrame([...]) 다음 줄부터 붙여넣기 하세요
+
+        st.dataframe(df_sh, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("### 🏦 지분 매수")
+
+    buy_share_qty = st.number_input(
+        f"매수할 주식 수 (주당 {format_won(SHARE_PRICE)}, 최대 {available}주 가능)",
+        min_value=1, max_value=max(1, available), value=1, key="share_qty"
+    )
+    share_total_cost = buy_share_qty * SHARE_PRICE
+
+    st.info(
+        f"💳 매수 수량: **{buy_share_qty}주** × {format_won(SHARE_PRICE)} = "
+        f"**총 {format_won(share_total_cost)}**\n\n"
+        f"📌 매수 후 내 지분: **{my_shares + buy_share_qty}주 "
+        f"({round((my_shares + buy_share_qty) / MAX_SHARES * 100, 1)}%)**"
+    )
+
+    if available <= 0:
+        st.error("이 도시의 모든 주식이 매진되었습니다!")
+    elif st.button("✅ 지분 매수 확정", key="do_share"):
+        if user["money"] < share_total_cost:
+            st.error("잔고가 부족합니다!")
+        elif buy_share_qty > available:
+            st.error(f"잔여 주식이 {available}주뿐입니다!")
+        else:
+            # 잔고 차감
+            run("UPDATE users SET money=money-? WHERE student_id=?", (share_total_cost, sid))
+            # 지분 추가
+            run("UPDATE shares SET amount=amount+? WHERE student_id=? AND city=?",
+                (buy_share_qty, sid, cur_city))
+            # 도시 누적 투자금 갱신
+            run("UPDATE cities SET invest_total=invest_total+? WHERE name=?",
+                (share_total_cost, cur_city))
+            # 레벨업 체크
+            check_city_levelup(cur_city)
+            add_log(sid, f"📈 {cur_city} 지분 {buy_share_qty}주 매수 ({format_won(share_total_cost)})")
+
+            # 영주 변경 알림
+            new_lord = get_lord(cur_city)
+            if new_lord == sid:
+                st.success(f"🎉 지분 매수 완료! 당신이 {cur_city}의 새 영주가 되었습니다!")
+            else:
+                st.success(f"✅ {buy_share_qty}주 매수 완료! (총 보유: {my_shares + buy_share_qty}주)")
+            st.rerun()
+
+    # ── 전체 도시 투자 현황 요약 ─────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🌍 전체 도시 투자 현황")
+
+    summary_rows = []
+    for c in CITIES:
+        c_row = get_city(c)
+        c_lord = get_lord(c)
+        c_my = get_shares(sid, c)
+        summary_rows.append({
+            "도시": f"{CITY_INFO[c]['flag']} {c}",
+            "레벨": f"Lv.{c_row['level']}",
+            "내 지분(주)": c_my,
+            "지분율(%)": round(c_my / MAX_SHARES * 100, 1),
+            "영주": f"{c_lord}번 학생" if c_lord else "공석",
+            "내가 영주?": "👑" if c_lord == sid else "",
+        })
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 8. 학생 탭 4: 내 포트폴리오
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def tab_portfolio(sid):
+    user = get_user(sid)
+    assets = total_assets(sid)
+
+    # ── 자산 요약 ────────────────────────────────────────────────────────
+    st.markdown("### 💼 자산 요약")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("💰 현재 잔고", format_won(user["money"]))
+    with col2:
+        st.metric("📊 총 자산 평가액", format_won(assets))
+    with col3:
+        profit = assets - INITIAL_MONEY
+        st.metric(
+            "📈 초기 자본 대비 손익",
+            format_won(profit),
+            delta=f"{round(profit / INITIAL_MONEY * 100, 1)}%"
+        )
+
+    st.markdown("---")
+
+    # ── 보유 화물 ────────────────────────────────────────────────────────
+    st.markdown("### 📦 보유 화물 현황")
+    inv_rows = get_inventory(sid)
+    if inv_rows:
+        cargo_data = []
+        for inv in inv_rows:
+            # 현재 시장가 조회 (구매 도시 기준)
+            g = fetchone("SELECT sell_price FROM goods WHERE name=? AND city=?",
+                         (inv["good_name"], inv["city"]))
+            cur_sell = g["sell_price"] if g else inv["avg_price"]
+            eval_val = cur_sell * inv["quantity"]
+            pnl = (cur_sell - inv["avg_price"]) * inv["quantity"]
+            cargo_data.append({
+                "상품명": inv["good_name"],
+                "구매 도시": inv["city"],
+                "수량": inv["quantity"],
+                "평균 매수가": format_won(inv["avg_price"]),
+                "현재 판매가": format_won(cur_sell),
+                "평가액": format_won(eval_val),
+                "평가 손익": f"{'🟢 +' if pnl >= 0 else '🔴 '}{format_won(pnl)}"
+            })
+        st.dataframe(pd.DataFrame(cargo_data), use_container_width=True, hide_index=True)
+    else:
+        st.info("보유 화물이 없습니다.")
+
+    st.markdown("---")
+
+    # ── 보유 지분 ────────────────────────────────────────────────────────
+    st.markdown("### 🏙️ 보유 지분 현황")
+    share_rows = fetchall(
+        "SELECT city, amount FROM shares WHERE student_id=? AND amount>0", (sid,)
+    )
+    if share_rows:
+        share_data = []
+        for s in share_rows:
+            c_lord = get_lord(s["city"])
+            share_data.append({
+                "도시": f"{CITY_INFO[s['city']]['flag']} {s['city']}",
+                "보유 주식": f"{s['amount']}주",
+                "지분율": f"{round(s['amount'] / MAX_SHARES * 100, 1)}%",
+                "평가액": format_won(s["amount"] * SHARE_PRICE),
+                "영주 여부": "👑 영주" if c_lord == sid else ("📌 " + str(c_lord) + "번 영주" if c_lord else "공석"),
+            })
+        st.dataframe(pd.DataFrame(share_data), use_container_width=True, hide_index=True)
+    else:
+        st.info("보유 지분이 없습니다.")
+
+    st.markdown("---")
+
+    # ── 관세 수입 내역 ───────────────────────────────────────────────────
+    st.markdown("### 💸 관세 수입 내역")
+    st.metric("누적 관세 수입", format_won(user["tariff_income"]))
+
+    tariff_logs = fetchall(
+        "SELECT ts, message FROM event_log WHERE student_id=? AND message LIKE '💰 관세%' ORDER BY id DESC LIMIT 20",
+        (sid,)
+    )
+    if tariff_logs:
+        for lg in tariff_logs:
+            st.caption(f"[{lg['ts']}] {lg['message']}")
+    else:
+        st.info("아직 관세 수입이 없습니다.")
+
+    st.markdown("---")
+
+    # ── 비밀번호 변경 ────────────────────────────────────────────────────
+    st.markdown("### 🔐 비밀번호 변경")
+    with st.expander("비밀번호 변경하기"):
+        old_pw  = st.text_input("현재 비밀번호", type="password", key="old_pw")
+        new_pw  = st.text_input("새 비밀번호",   type="password", key="new_pw")
+        new_pw2 = st.text_input("새 비밀번호 확인", type="password", key="new_pw2")
+        if st.button("변경 확정", key="change_pw"):
+            db_pw = fetchone("SELECT password FROM users WHERE student_id=?", (sid,))
+            if db_pw["password"] != old_pw:
+                st.error("현재 비밀번호가 틀렸습니다.")
+            elif new_pw != new_pw2:
+                st.error("새 비밀번호가 일치하지 않습니다.")
+            elif len(new_pw) < 4:
+                st.error("비밀번호는 4자리 이상으로 설정해 주세요.")
+            else:
+                run("UPDATE users SET password=? WHERE student_id=?", (new_pw, sid))
+                st.success("✅ 비밀번호가 변경되었습니다!")
+
+    # ── 최근 전체 활동 로그 ──────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📋 최근 활동 기록 (최대 15건)")
+    all_logs = fetchall(
+        "SELECT ts, message FROM event_log WHERE student_id=? ORDER BY id DESC LIMIT 15",
+        (sid,)
+    )
+    if all_logs:
+        for lg in all_logs:
+            st.caption(f"[{lg['ts']}] {lg['message']}")
+    else:
+        st.caption("기록이 없습니다.")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 9. 교사 관리자 화면
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def page_admin():
+    st.title("👩‍🏫 교사 관리자 대시보드")
+    st.markdown("---")
+
+    admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs([
+        "🏆 학생 순위표",
+        "⚡ 돌발 이벤트",
+        "🔐 비밀번호 관리",
+        "🔄 게임 초기화"
+    ])
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 탭 1: 학생 순위표
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with admin_tab1:
+        st.subheader("📊 전체 학생 자산 순위표")
+
+        rows = []
+        for sid in range(1, 24):
+            user = get_user(sid)
+            assets = total_assets(sid)
+
+            # 영주 도시 목록
+            lord_cities = []
+            for c in CITIES:
+                if get_lord(c) == sid:
+                    lord_cities.append(f"{CITY_INFO[c]['flag']}{c}")
+
+            # 보유 화물 요약
+            inv_cnt = len(get_inventory(sid))
+
+            rows.append({
+                "학생 번호": f"{sid}번",
+                "현재 위치": user["location"],
+                "잔고": user["money"],
+                "총 자산": assets,
+                "관세 수입": user["tariff_income"],
+                "영주 도시": ", ".join(lord_cities) if lord_cities else "-",
+                "보유 화물 종류": inv_cnt,
+                "보험": "✅" if user["insurance"] else "❌",
+            })
+
+        df_rank = pd.DataFrame(rows)
+        df_rank = df_rank.sort_values("총 자산", ascending=False).reset_index(drop=True)
+        df_rank.insert(0, "순위", range(1, len(df_rank) + 1))
+
+        # 표시용 포맷
+        df_display = df_rank.copy()
+        df_display["잔고"]     = df_display["잔고"].apply(format_won)
+        df_display["총 자산"] = df_display["총 자산"].apply(format_won)
+        df_display["관세 수입"] = df_display["관세 수입"].apply(format_won)
+
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+        # CSV 다운로드
+        csv_buf = io.StringIO()
+        df_rank.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+        st.download_button(
+            label="📥 CSV 다운로드",
+            data=csv_buf.getvalue().encode("utf-8-sig"),
+            file_name=f"trade_game_rank_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+
+        st.markdown("---")
+
+        # 도시별 영주 현황
+        st.subheader("👑 도시별 영주 현황")
+        lord_rows = []
+        for c in CITIES:
+            c_row  = get_city(c)
+            c_lord = get_lord(c)
+            sh_all = get_city_shares_all(c)
+            total_sh = sum(s["amount"] for s in sh_all)
+            lord_rows.append({
+                "도시": f"{CITY_INFO[c]['flag']} {c}",
+                "레벨": f"Lv.{c_row['level']}",
+                "누적 투자금": format_won(c_row["invest_total"]),
+                "영주": f"{c_lord}번 학생" if c_lord else "공석",
+                "발행 주식": f"{total_sh}/{MAX_SHARES}주",
+                "FTA 적용": "✅" if c in st.session_state.fta_cities else "❌",
+            })
+        st.dataframe(pd.DataFrame(lord_rows), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # 전체 이벤트 로그 최근 30건
+        st.subheader("📋 최근 게임 이벤트 로그")
+        all_logs = fetchall(
+            "SELECT ts, student_id, message FROM event_log ORDER BY id DESC LIMIT 30"
+        )
+        if all_logs:
+            log_df = pd.DataFrame([{
+                "시각": lg["ts"],
+                "학생": f"{lg['student_id']}번" if lg["student_id"] else "시스템",
+                "내용": lg["message"]
+            } for lg in all_logs])
+            st.dataframe(log_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("아직 이벤트 기록이 없습니다.")
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 탭 2: 돌발 이벤트
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with admin_tab2:
+        st.subheader("⚡ 돌발 이벤트 수동 발동")
+        st.warning("⚠️ 이벤트를 발동하면 즉시 게임에 반영됩니다!")
+
+        event_col1, event_col2 = st.columns(2)
+
+        # ── 무역품 가격 폭등 ──────────────────────────────────────────────
+        with event_col1:
+            st.markdown("#### 📈 무역품 가격 폭등")
+            sel_city_boom = st.selectbox("대상 도시", CITIES, key="boom_city")
+            boom_rate = st.slider("가격 배율", min_value=1.5, max_value=5.0,
+                                  value=2.0, step=0.5, key="boom_rate")
+            if st.button("🚀 가격 폭등 발동", key="do_boom"):
+                run(
+                    "UPDATE goods SET buy_price=CAST(buy_price*? AS INTEGER), "
+                    "sell_price=CAST(sell_price*? AS INTEGER) WHERE city=?",
+                    (boom_rate, boom_rate, sel_city_boom)
+                )
+                msg = f"📈 [관리자] {sel_city_boom} 무역품 가격 {boom_rate}배 폭등 이벤트 발동!"
+                add_log(0, msg)
+                st.success(msg)
+
+        # ── 무역품 가격 폭락 ──────────────────────────────────────────────
+        with event_col2:
+            st.markdown("#### 📉 무역품 가격 폭락")
+            sel_city_crash = st.selectbox("대상 도시", CITIES, key="crash_city")
+            crash_rate = st.slider("가격 배율 (1 미만)", min_value=0.2, max_value=0.9,
+                                   value=0.5, step=0.1, key="crash_rate")
+            if st.button("💥 가격 폭락 발동", key="do_crash"):
+                run(
+                    "UPDATE goods SET buy_price=CAST(buy_price*? AS INTEGER), "
+                    "sell_price=CAST(sell_price*? AS INTEGER) WHERE city=?",
+                    (crash_rate, crash_rate, sel_city_crash)
+                )
+                msg = f"📉 [관리자] {sel_city_crash} 무역품 가격 {crash_rate}배 폭락 이벤트 발동!"
+                add_log(0, msg)
+                st.success(msg)
+
+        st.markdown("---")
+        event_col3, event_col4 = st.columns(2)
+
+        # ── FTA 체결 (관세 0%) ────────────────────────────────────────────
+        with event_col3:
+            st.markdown("#### 🤝 FTA 체결 (관세 0%)")
+            sel_fta_city = st.selectbox("FTA 적용 도시", CITIES, key="fta_city")
+            fta_active_now = sel_fta_city in st.session_state.fta_cities
+            if fta_active_now:
+                st.info(f"✅ {sel_fta_city}는 현재 FTA 적용 중입니다.")
+                if st.button("❌ FTA 해제", key="remove_fta"):
+                    st.session_state.fta_cities.discard(sel_fta_city)
+                    msg = f"🤝 [관리자] {sel_fta_city} FTA 해제 (관세 복구)"
+                    add_log(0, msg)
+                    st.success(msg)
+                    st.rerun()
+            else:
+                if st.button("✅ FTA 체결 발동", key="do_fta"):
+                    st.session_state.fta_cities.add(sel_fta_city)
+                    msg = f"🤝 [관리자] {sel_fta_city} FTA 체결! 관세 0% 적용!"
+                    add_log(0, msg)
+                    st.success(msg)
+                    st.rerun()
+
+        # ── 운하 봉쇄 ────────────────────────────────────────────────────
+        with event_col4:
+            st.markdown("#### ⛔ 운하 봉쇄")
+            canal_c1 = st.selectbox("출발 도시", CITIES, key="canal_c1")
+            canal_c2 = st.selectbox("도착 도시",
+                                    [c for c in CITIES if c != canal_c1],
+                                    key="canal_c2")
+            canal_key = (canal_c1, canal_c2)
+            if canal_key in st.session_state.canal_blocked and st.session_state.canal_blocked[canal_key]:
+                st.info(f"⛔ {canal_c1} ↔ {canal_c2} 항로 현재 봉쇄 중")
+                if st.button("봉쇄 해제", key="remove_canal"):
+                    st.session_state.canal_blocked[canal_key] = False
+                    st.session_state.canal_blocked[(canal_c2, canal_c1)] = False
+                    add_log(0, f"⛔ [관리자] {canal_c1} ↔ {canal_c2} 운하 봉쇄 해제")
+                    st.rerun()
+            else:
+                if st.button("⛔ 운하 봉쇄 발동", key="do_canal"):
+                    st.session_state.canal_blocked[canal_key] = True
+                    st.session_state.canal_blocked[(canal_c2, canal_c1)] = True
+                    msg = f"⛔ [관리자] {canal_c1} ↔ {canal_c2} 운하 봉쇄! 이동 비용 2배!"
+                    add_log(0, msg)
+                    st.success(msg)
+                    st.rerun()
+
+        st.markdown("---")
+
+        # ── 도시 강제 레벨업 ─────────────────────────────────────────────
+        st.markdown("#### 🎯 도시 강제 레벨업")
+        lv_city = st.selectbox("레벨업 도시 선택", CITIES, key="lv_city")
+        lv_row  = get_city(lv_city)
+        st.info(f"현재 {lv_city} 레벨: **Lv.{lv_row['level']}**")
+        if lv_row["level"] < 3:
+            if st.button("⬆️ 레벨업 강제 실행", key="do_levelup"):
+                run("UPDATE cities SET level=level+1 WHERE name=?", (lv_city,))
+                msg = f"🎉 [관리자] {lv_city} 강제 레벨업! Lv.{lv_row['level']+1} 달성!"
+                add_log(0, msg)
+                st.success(msg)
+                st.rerun()
+        else:
+            st.success("이미 최고 레벨(Lv.3)입니다.")
+
+        st.markdown("---")
+
+        # ── 특정 학생 자금 지급 ──────────────────────────────────────────
+        st.markdown("#### 💰 학생 자금 지급 / 차감")
+        money_sid = st.selectbox("대상 학생", list(range(1, 24)),
+                                 format_func=lambda x: f"{x}번 학생", key="money_sid")
+        money_amt = st.number_input("금액 (음수 입력 시 차감)",
+                                    min_value=-5_000_000, max_value=5_000_000,
+                                    value=100_000, step=10_000, key="money_amt")
+        if st.button("💳 자금 지급/차감 실행", key="do_money"):
+            run("UPDATE users SET money=money+? WHERE student_id=?", (money_amt, money_sid))
+            action = "지급" if money_amt >= 0 else "차감"
+            msg = f"💰 [관리자] {money_sid}번 학생에게 {format_won(abs(money_amt))} {action}"
+            add_log(0, msg)
+            add_log(money_sid, msg)
+            st.success(msg)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 탭 3: 비밀번호 관리
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with admin_tab3:
+        st.subheader("🔐 학생 비밀번호 관리")
+
+        pw_sid = st.selectbox("대상 학생 선택", list(range(1, 24)),
+                              format_func=lambda x: f"{x}번 학생", key="pw_sid")
+        new_admin_pw = st.text_input("새 비밀번호 설정", type="password", key="new_admin_pw")
+
+        if st.button("🔑 비밀번호 초기화/변경", key="do_admin_pw"):
+            if len(new_admin_pw) < 4:
+                st.error("비밀번호는 4자리 이상으로 설정해 주세요.")
+            else:
+                run("UPDATE users SET password=? WHERE student_id=?", (new_admin_pw, pw_sid))
+                st.success(f"✅ {pw_sid}번 학생의 비밀번호가 변경되었습니다.")
+
+        st.markdown("---")
+
+        if st.button("🔄 전체 학생 비밀번호 '0000' 으로 초기화", key="reset_all_pw"):
+            run("UPDATE users SET password='0000'")
+            st.success("✅ 전체 학생 비밀번호가 '0000'으로 초기화되었습니다.")
+
+        st.markdown("---")
+        st.markdown("#### 📋 현재 학생 비밀번호 목록")
+        pw_rows = fetchall("SELECT student_id, password FROM users ORDER BY student_id")
+        pw_df = pd.DataFrame([{
+            "학생 번호": f"{r['student_id']}번",
+            "비밀번호": r["password"]
+        } for r in pw_rows])
+        st.dataframe(pw_df, use_container_width=True, hide_index=True)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 탭 4: 게임 초기화
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with admin_tab4:
+        st.subheader("🔄 게임 데이터 초기화")
+        st.error(
+            "⚠️ **주의:** 초기화 버튼을 누르면 모든 학생의 자금, 위치, 재고, 지분, "
+            "이벤트 로그가 완전히 리셋됩니다. 이 작업은 되돌릴 수 없습니다!"
+        )
+
+        confirm = st.checkbox("정말로 초기화하겠습니다. (체크 후 버튼 활성화)", key="reset_confirm")
+        if confirm:
+            if st.button("🔴 게임 전체 초기화 실행", key="do_reset"):
+                reset_db()
+                st.success("✅ 게임 데이터가 초기화되었습니다! 모든 학생이 1,000,000원으로 시작합니다.")
+                st.balloons()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 10. 학생 메인 페이지
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def page_student(sid):
+    user = get_user(sid)
+    st.title(f"🌊 대항해시대 보드게임 — {sid}번 학생")
+    st.caption(
+        f"📍 현재 위치: **{user['location']}**  |  "
+        f"💰 잔고: **{format_won(user['money'])}**  |  "
+        f"🏦 총 자산: **{format_won(total_assets(sid))}**"
+    )
+
+    # 시스템 공지 (레벨업 등)
+    sys_logs = fetchall(
+        "SELECT ts, message FROM event_log WHERE student_id=0 ORDER BY id DESC LIMIT 3"
+    )
+    if sys_logs:
+        for lg in sys_logs:
+            st.info(f"📢 [{lg['ts']}] {lg['message']}")
+
+    st.markdown("---")
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🗺️ 세계 지도 & 이동",
+        "🛒 무역 시장",
+        "📈 도시 투자",
+        "💼 내 포트폴리오"
+    ])
+
+    with tab1:
+        tab_map(sid)
+    with tab2:
+        tab_trade(sid)
+    with tab3:
+        tab_invest(sid)
+    with tab4:
+        tab_portfolio(sid)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 11. 앱 메인 진입점
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def main():
+    st.set_page_config(
+        page_title="🌊 대항해시대 세계 무역 보드게임",
+        page_icon="⚓",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # CSS 스타일 보정
+    st.markdown("""
+    <style>
+        .stMetric label { font-size: 0.85rem; }
+        .stButton>button {
+            width: 100%;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .stTabs [data-baseweb="tab"] {
+            font-size: 1rem;
+            font-weight: bold;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # 세션 초기화
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = None
+    if "student_id" not in st.session_state:
+        st.session_state.student_id = None
+    if "canal_blocked" not in st.session_state:
+        st.session_state.canal_blocked = {}
+    if "fta_cities" not in st.session_state:
+        st.session_state.fta_cities = set()
+
+    # DB 초기화 (최초 실행 시)
+    init_db()
+
+    # 사이드바 로그인
+    sidebar_login()
+
+    # 메인 화면 라우팅
+    if st.session_state.logged_in == "admin":
+        page_admin()
+    elif st.session_state.logged_in == "student":
+        page_student(st.session_state.student_id)
+    else:
+        # 로그인 전 메인 화면
+        st.markdown("""
+        <div style='text-align:center; padding: 60px 0 20px 0;'>
+            <h1>⚓ 대항해시대 세계 무역 보드게임</h1>
+            <h3>🌍 무역과 투자로 세계를 정복하라!</h3>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_l, col_c, col_r = st.columns([1, 2, 1])
+        with col_c:
+            st.markdown("""
+            ---
+            ### 🎮 게임 소개
+            - **8개 도시**를 항해하며 무역품을 사고팔아 부를 축적하세요!
+            - **지분을 매수**하여 도시의 영주가 되면 관세 수입이 생깁니다!
+            - **도시에 투자**할수록 레벨이 올라 더 좋은 무역품이 해금됩니다!
+            - 해적, 태풍, 운하 봉쇄 등 **리스크 이벤트**를 조심하세요!
+
+            ---
+            ### 🌏 8개 무역 도시
+            | 도시 | 지역 | 주요 무역품 |
+            |------|------|------------|
+            | 🇨🇳 상하이 | 아시아 | 비단, 도자기, AI칩 |
+            | 🇮🇳 뭄바이 | 아시아 | 향신료, 홍차, 의약원료 |
+            | 🇬🇧 런던 | 유럽 | 정밀기계, 위스키, 양자컴퓨터 |
+            | 🇪🇬 카이로 | 아프리카 | 면화, 석유, 희토류 |
+            | 🇺🇸 뉴욕 | 북아메리카 | IT기기, 금융상품, 바이오칩 |
+            | 🇧🇷 상파울루 | 남아메리카 | 커피원두, 카카오, 열대의약품 |
+            | 🇦🇺 시드니 | 오세아니아 | 양모, 철광석, 핵융합소재 |
+            | 🇮🇸 레이캬비크 | 북극권 | 수산물통조림, 신재생에너지, 친환경수소 |
+
+            ---
+            ⬅️ **왼쪽 사이드바에서 로그인하세요!**
+            """)
+
+
+if __name__ == "__main__":
+    main()
+
