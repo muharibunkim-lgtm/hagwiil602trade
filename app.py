@@ -274,13 +274,11 @@ if "fta_cities" not in st.session_state:
 def get_conn():
     """
     호출할 때마다 새로운 연결을 생성합니다.
-    (여러 학생이 동시에 접속해도 서로의 연결에 영향을 주지 않도록 함)
+    ⚠️ WAL 모드는 Streamlit Cloud 환경에서 Segmentation fault를 유발할 수 있어 사용하지 않습니다.
     """
     conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    # WAL 모드: 읽기와 쓰기가 동시에 일어나도 덜 막히게 해줌
-    conn.execute("PRAGMA journal_mode=WAL;")
-    # 잠금 상태일 때 최대 30초까지 재시도 대기 (database is locked 방지)
+    # WAL 대신 기본 저널 모드 + busy_timeout만 사용 (더 안전함)
     conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
