@@ -372,7 +372,7 @@ def init_db():
         # ── 여기부터 전부 try 블록 안으로 이동! (conn.close() 이전) ──
 
         # 학생 1~23 초기 등록
-        for sid in range(1, 23):
+        for sid in range(1, 24):
             cur.execute("INSERT OR IGNORE INTO users (student_id) VALUES (?)", (int(sid),))
 
         # 도시 초기 등록
