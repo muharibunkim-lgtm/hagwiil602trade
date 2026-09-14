@@ -270,7 +270,6 @@ if "fta_cities" not in st.session_state:
 # 2. DB 초기화 / 공통 DB 함수
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@st.cache_resource
 def get_conn():
     """호출할 때마다 새 연결을 생성 (캐시하지 않음)"""
     conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
@@ -309,19 +308,19 @@ def fetchone(sql, params=()):
 
 
 def init_db():
-    conn = get_conn()          # ← 여기서 새 연결 생성
+    conn = get_conn()   # 캐시되지 않은 새 연결 (매번 새로 만들어짐)
     try:
         cur = conn.cursor()
-
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            student_id   INTEGER PRIMARY KEY,
-            password     TEXT    DEFAULT '0000',
-            money        INTEGER DEFAULT 1000000,
-            location     TEXT    DEFAULT '상하이',
-            insurance    INTEGER DEFAULT 0,
-            tariff_income INTEGER DEFAULT 0
-        )""")
+            CREATE TABLE IF NOT EXISTS users (
+                student_id    INTEGER PRIMARY KEY,
+                password      TEXT    DEFAULT '0000',
+                money         INTEGER DEFAULT 1000000,
+                location      TEXT    DEFAULT '상하이',
+                insurance     INTEGER DEFAULT 0,
+                tariff_income INTEGER DEFAULT 0
+            )
+        """)
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS cities (
@@ -367,6 +366,8 @@ def init_db():
         )""")
 
         conn.commit()
+    finally:
+        conn.close()
 
         # 학생 1~23 초기 등록
         for sid in range(1, 23):
