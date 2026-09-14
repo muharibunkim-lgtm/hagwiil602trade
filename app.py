@@ -395,8 +395,7 @@ def init_db():
                 )
 
         conn.commit()
-    finally:
-        conn.close()
+    
 
 
 def reset_db():
