@@ -8,6 +8,7 @@ import sqlite3
 import pandas as pd
 import random
 import io
+import threading
 from datetime import datetime
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -15,6 +16,7 @@ from datetime import datetime
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 DB_PATH = "trade_game.db"
+_db_lock = threading.Lock()     # 동시 쓰기 충돌 방지용 락
 INITIAL_MONEY = 1_000_000       # 초기 자금 100만 원
 SHARE_PRICE   = 50_000          # 주당 5만 원
 MAX_SHARES    = 100             # 도시당 최대 주식 수
@@ -270,134 +272,163 @@ if "fta_cities" not in st.session_state:
 
 @st.cache_resource
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    """
+    호출할 때마다 새로운 연결을 생성합니다.
+    (여러 학생이 동시에 접속해도 서로의 연결에 영향을 주지 않도록 함)
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # WAL 모드: 읽기와 쓰기가 동시에 일어나도 덜 막히게 해줌
+    conn.execute("PRAGMA journal_mode=WAL;")
+    # 잠금 상태일 때 최대 30초까지 재시도 대기 (database is locked 방지)
+    conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
+
 def run(sql, params=()):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(sql, params)
-    conn.commit()
-    return cur
+    """쓰기 작업(INSERT/UPDATE/DELETE)용. 락으로 순서를 보장하고 매번 연결을 닫는다."""
+    with _db_lock:
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            conn.commit()
+            return cur
+        finally:
+            conn.close()
+
 
 def fetchall(sql, params=()):
-    return get_conn().execute(sql, params).fetchall()
+    """조회용. 매번 새 연결을 열고 바로 닫는다."""
+    conn = get_conn()
+    try:
+        return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
 
 def fetchone(sql, params=()):
-    return get_conn().execute(sql, params).fetchone()
+    """조회용. 매번 새 연결을 열고 바로 닫는다."""
+    conn = get_conn()
+    try:
+        return conn.execute(sql, params).fetchone()
+    finally:
+        conn.close()
 
 def init_db():
     """DB 테이블 생성 및 초기 데이터 삽입"""
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    # ── users ──────────────────────────────────────────────────────────────
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        student_id   INTEGER PRIMARY KEY,
-        password     TEXT    DEFAULT '0000',
-        money        INTEGER DEFAULT 1000000,
-        location     TEXT    DEFAULT '상하이',
-        insurance    INTEGER DEFAULT 0,
-        tariff_income INTEGER DEFAULT 0
-    )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            student_id   INTEGER PRIMARY KEY,
+            password     TEXT    DEFAULT '0000',
+            money        INTEGER DEFAULT 1000000,
+            location     TEXT    DEFAULT '상하이',
+            insurance    INTEGER DEFAULT 0,
+            tariff_income INTEGER DEFAULT 0
+        )""")
 
-    # ── cities ─────────────────────────────────────────────────────────────
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS cities (
-        name         TEXT PRIMARY KEY,
-        level        INTEGER DEFAULT 1,
-        invest_total INTEGER DEFAULT 0
-    )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS cities (
+            name         TEXT PRIMARY KEY,
+            level        INTEGER DEFAULT 1,
+            invest_total INTEGER DEFAULT 0
+        )""")
 
-    # ── goods ──────────────────────────────────────────────────────────────
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS goods (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        city         TEXT,
-        name         TEXT,
-        buy_price    INTEGER,
-        sell_price   INTEGER,
-        unlock_level INTEGER DEFAULT 1
-    )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS goods (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            city         TEXT,
+            name         TEXT,
+            buy_price    INTEGER,
+            sell_price   INTEGER,
+            unlock_level INTEGER DEFAULT 1
+        )""")
 
-    # ── shares ─────────────────────────────────────────────────────────────
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS shares (
-        student_id  INTEGER,
-        city        TEXT,
-        amount      INTEGER DEFAULT 0,
-        PRIMARY KEY (student_id, city)
-    )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS shares (
+            student_id  INTEGER,
+            city        TEXT,
+            amount      INTEGER DEFAULT 0,
+            PRIMARY KEY (student_id, city)
+        )""")
 
-    # ── inventory ──────────────────────────────────────────────────────────
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS inventory (
-        student_id  INTEGER,
-        good_name   TEXT,
-        city        TEXT,
-        quantity    INTEGER DEFAULT 0,
-        avg_price   INTEGER DEFAULT 0,
-        PRIMARY KEY (student_id, good_name, city)
-    )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS inventory (
+            student_id  INTEGER,
+            good_name   TEXT,
+            city        TEXT,
+            quantity    INTEGER DEFAULT 0,
+            avg_price   INTEGER DEFAULT 0,
+            PRIMARY KEY (student_id, good_name, city)
+        )""")
 
-    # ── event_log ──────────────────────────────────────────────────────────
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS event_log (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        ts        TEXT,
-        student_id INTEGER,
-        message   TEXT
-    )""")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS event_log (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts        TEXT,
+            student_id INTEGER,
+            message   TEXT
+        )""")
 
-    conn.commit()
+        conn.commit()
 
-    # ── 초기 데이터 삽입 (이미 있으면 무시) ───────────────────────────────
+        # 학생 1~23 초기 등록
+        for sid in range(1, 24):
+            cur.execute("INSERT OR IGNORE INTO users (student_id) VALUES (?)", (int(sid),))
 
-    # 학생 1 ~ 23
-    for sid in range(1, 24):
-        cur.execute("INSERT OR IGNORE INTO users (student_id) VALUES (?)", (sid,))
+        # 도시 초기 등록
+        for city in CITIES:
+            cur.execute("INSERT OR IGNORE INTO cities (name) VALUES (?)", (city,))
 
-    # 도시
-    for city in CITIES:
-        cur.execute("INSERT OR IGNORE INTO cities (name) VALUES (?)", (city,))
+        # 무역품 초기 등록 (이미 있으면 건너뜀)
+        exists = cur.execute("SELECT 1 FROM goods LIMIT 1").fetchone()
+        if not exists:
+            for row in GOODS_DATA:
+                cur.execute(
+                    "INSERT INTO goods (city, name, buy_price, sell_price, unlock_level) VALUES (?,?,?,?,?)",
+                    row
+                )
 
-    # 무역품
-    if not fetchone("SELECT 1 FROM goods LIMIT 1"):
+        # 지분 초기화 (student × city)
+        for sid in range(1, 24):
+            for city in CITIES:
+                cur.execute(
+                    "INSERT OR IGNORE INTO shares (student_id, city, amount) VALUES (?,?,0)",
+                    (int(sid), city)
+                )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_db():
+    """게임 데이터 전체 초기화"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET money=1000000, location='상하이', insurance=0, tariff_income=0, password='0000'")
+        cur.execute("UPDATE cities SET level=1, invest_total=0")
+        cur.execute("UPDATE shares SET amount=0")
+        cur.execute("DELETE FROM inventory")
+        cur.execute("DELETE FROM event_log")
+        cur.execute("DELETE FROM goods")
         for row in GOODS_DATA:
             cur.execute(
                 "INSERT INTO goods (city, name, buy_price, sell_price, unlock_level) VALUES (?,?,?,?,?)",
                 row
             )
+        conn.commit()
+    finally:
+        conn.close()
 
-    # 지분 (student × city 전체 초기화)
-    for sid in range(1, 24):
-        for city in CITIES:
-            cur.execute("INSERT OR IGNORE INTO shares (student_id, city, amount) VALUES (?,?,0)", (sid, city))
-
-    conn.commit()
-
-def reset_db():
-    """게임 데이터 전체 초기화"""
-    run("UPDATE users SET money=1000000, location='상하이', insurance=0, tariff_income=0, password='0000'")
-    run("UPDATE cities SET level=1, invest_total=0")
-    run("UPDATE shares SET amount=0")
-    run("DELETE FROM inventory")
-    run("DELETE FROM event_log")
-    # 가격 리셋
-    run("DELETE FROM goods")
-    conn = get_conn()
-    cur = conn.cursor()
-    for row in GOODS_DATA:
-        cur.execute(
-            "INSERT INTO goods (city, name, buy_price, sell_price, unlock_level) VALUES (?,?,?,?,?)",
-            row
-        )
-    conn.commit()
     st.session_state.canal_blocked = {}
     st.session_state.fta_cities = set()
-
+    
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 3. 보조 / 게임 로직 함수
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
