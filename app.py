@@ -308,9 +308,11 @@ def fetchone(sql, params=()):
 
 
 def init_db():
-    conn = get_conn()   # 캐시되지 않은 새 연결 (매번 새로 만들어짐)
+    conn = get_conn()
     try:
         cur = conn.cursor()
+
+        # ── 테이블 생성 ──────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 student_id    INTEGER PRIMARY KEY,
@@ -365,9 +367,9 @@ def init_db():
             message   TEXT
         )""")
 
-        conn.commit()
-    finally:
-        conn.close()
+        conn.commit()   # 테이블 생성 커밋
+
+        # ── 여기부터 전부 try 블록 안으로 이동! (conn.close() 이전) ──
 
         # 학생 1~23 초기 등록
         for sid in range(1, 23):
@@ -394,8 +396,10 @@ def init_db():
                     (int(sid), city)
                 )
 
-        conn.commit()
-    
+        conn.commit()   # 초기 데이터 등록까지 최종 커밋
+
+    finally:
+        conn.close()   # ✅ 모든 작업이 끝난 뒤, 맨 마지막에 딱 한 번만 실행
 
 
 def reset_db():
