@@ -272,19 +272,15 @@ if "fta_cities" not in st.session_state:
 
 @st.cache_resource
 def get_conn():
-    """
-    호출할 때마다 새로운 연결을 생성합니다.
-    ⚠️ WAL 모드는 Streamlit Cloud 환경에서 Segmentation fault를 유발할 수 있어 사용하지 않습니다.
-    """
+    """호출할 때마다 새 연결을 생성 (캐시하지 않음)"""
     conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    # WAL 대신 기본 저널 모드 + busy_timeout만 사용 (더 안전함)
     conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
 
 def run(sql, params=()):
-    """쓰기 작업(INSERT/UPDATE/DELETE)용. 락으로 순서를 보장하고 매번 연결을 닫는다."""
+    """쓰기 작업 전용. 매번 새 연결을 열고 반드시 닫는다."""
     with _db_lock:
         conn = get_conn()
         try:
@@ -297,7 +293,6 @@ def run(sql, params=()):
 
 
 def fetchall(sql, params=()):
-    """조회용. 매번 새 연결을 열고 바로 닫는다."""
     conn = get_conn()
     try:
         return conn.execute(sql, params).fetchall()
@@ -306,16 +301,15 @@ def fetchall(sql, params=()):
 
 
 def fetchone(sql, params=()):
-    """조회용. 매번 새 연결을 열고 바로 닫는다."""
     conn = get_conn()
     try:
         return conn.execute(sql, params).fetchone()
     finally:
         conn.close()
 
+
 def init_db():
-    """DB 테이블 생성 및 초기 데이터 삽입"""
-    conn = get_conn()
+    conn = get_conn()          # ← 여기서 새 연결 생성
     try:
         cur = conn.cursor()
 
@@ -375,7 +369,7 @@ def init_db():
         conn.commit()
 
         # 학생 1~23 초기 등록
-        for sid in range(1, 24):
+        for sid in range(1, 23):
             cur.execute("INSERT OR IGNORE INTO users (student_id) VALUES (?)", (int(sid),))
 
         # 도시 초기 등록
