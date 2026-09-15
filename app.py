@@ -1248,7 +1248,7 @@ def page_admin():
     st.title("👩‍🏫 교사 관리자 대시보드")
     st.markdown("---")
 
-    admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs([
+    admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5 = st.tabs([
         "🏆 학생 순위표",
         "⚡ 돌발 이벤트",
         "🔐 비밀번호 관리",
