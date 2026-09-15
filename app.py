@@ -823,7 +823,7 @@ def get_share_price(city_name):
     return int(round(price / 100) * 100)   # 100원 단위로 반올림
 
 
-def get_sell_price(city_name):
+def get_share_sell_price(city_name):
     """매도가는 매수가의 90% (10% 스프레드로 단타 매매 방지)"""
     return int(get_share_price(city_name) * 0.9)
 
@@ -1017,7 +1017,7 @@ def tab_invest(sid):
     st.markdown("### 🏦 지분 매수 · 매도")
 
     current_price = get_share_price(cur_city)
-    current_sell_price = get_sell_price(cur_city)
+    current_sell_price = get_share_sell_price(cur_city)
 
     price_col1, price_col2 = st.columns(2)
     with price_col1:
