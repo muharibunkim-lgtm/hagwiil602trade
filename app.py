@@ -806,6 +806,27 @@ def tab_trade(sid):
             st.success(f"✅ {sel_buy} {buy_qty}개 구매 완료!")
             st.rerun()
 
+def get_share_price(city_name):
+    """
+    도시 레벨과 유통 비율에 따라 실시간으로 변하는 지분 가격을 계산합니다.
+    - 도시 레벨이 오를수록 가격 상승 (성장한 도시 = 가치 있는 도시)
+    - 이미 팔린 주식이 많을수록 가격 상승 (희소성 반영, 초반 매점매석 방지)
+    """
+    city_row = get_city(city_name)
+    level = city_row["level"]
+
+    shares_all = get_city_shares_all(city_name)
+    total_sold = sum(s["amount"] for s in shares_all)
+    supply_ratio = total_sold / MAX_SHARES   # 0.0 ~ 1.0
+
+    price = SHARE_PRICE * level * (1 + supply_ratio)
+    return int(round(price / 100) * 100)   # 100원 단위로 반올림
+
+
+def get_sell_price(city_name):
+    """매도가는 매수가의 90% (10% 스프레드로 단타 매매 방지)"""
+    return int(get_share_price(city_name) * 0.9)
+
     st.markdown("---")
     st.markdown("### 💰 매도 (판매)")
 
@@ -993,48 +1014,89 @@ def tab_invest(sid):
         st.dataframe(df_sh, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.markdown("### 🏦 지분 매수")
+    st.markdown("### 🏦 지분 매수 · 매도")
 
-    buy_share_qty = st.number_input(
-        f"매수할 주식 수 (주당 {format_won(SHARE_PRICE)}, 최대 {available}주 가능)",
-        min_value=1, max_value=max(1, available), value=1, key="share_qty"
-    )
-    share_total_cost = buy_share_qty * SHARE_PRICE
+    current_price = get_share_price(cur_city)
+    current_sell_price = get_sell_price(cur_city)
 
-    st.info(
-        f"💳 매수 수량: **{buy_share_qty}주** × {format_won(SHARE_PRICE)} = "
-        f"**총 {format_won(share_total_cost)}**\n\n"
-        f"📌 매수 후 내 지분: **{my_shares + buy_share_qty}주 "
-        f"({round((my_shares + buy_share_qty) / MAX_SHARES * 100, 1)}%)**"
-    )
+    price_col1, price_col2 = st.columns(2)
+    with price_col1:
+        st.metric("📈 현재 매수가 (1주)", format_won(current_price))
+    with price_col2:
+        st.metric("📉 현재 매도가 (1주)", format_won(current_sell_price))
+    st.caption("💡 지분 가격은 도시 레벨과 유통량에 따라 실시간으로 변동합니다. 도시가 성장할수록, 주식이 많이 팔릴수록 가격이 오릅니다.")
 
-    if available <= 0:
-        st.error("이 도시의 모든 주식이 매진되었습니다!")
-    elif st.button("✅ 지분 매수 확정", key="do_share"):
-        if user["money"] < share_total_cost:
-            st.error("잔고가 부족합니다!")
-        elif buy_share_qty > available:
-            st.error(f"잔여 주식이 {available}주뿐입니다!")
-        else:
-            # 잔고 차감
-            run("UPDATE users SET money=money-? WHERE student_id=?", (share_total_cost, sid))
-            # 지분 추가
-            run("UPDATE shares SET amount=amount+? WHERE student_id=? AND city=?",
-                (buy_share_qty, sid, cur_city))
-            # 도시 누적 투자금 갱신
-            run("UPDATE cities SET invest_total=invest_total+? WHERE name=?",
-                (share_total_cost, cur_city))
-            # 레벨업 체크
-            check_city_levelup(cur_city)
-            add_log(sid, f"📈 {cur_city} 지분 {buy_share_qty}주 매수 ({format_won(share_total_cost)})")
+    buy_tab, sell_tab = st.tabs(["🛒 매수", "💰 매도"])
 
-            # 영주 변경 알림
-            new_lord = get_lord(cur_city)
-            if new_lord == sid:
-                st.success(f"🎉 지분 매수 완료! 당신이 {cur_city}의 새 영주가 되었습니다!")
+    # ── 매수 탭 ─────────────────────────────────────────────
+    with buy_tab:
+        buy_share_qty = st.number_input(
+            f"매수할 주식 수 (주당 {format_won(current_price)}, 최대 {available}주 가능)",
+            min_value=1, max_value=max(1, available), value=1, key="share_buy_qty"
+        )
+        share_total_cost = buy_share_qty * current_price
+
+        st.info(
+            f"💳 매수 수량: **{buy_share_qty}주** × {format_won(current_price)} = "
+            f"**총 {format_won(share_total_cost)}**\n\n"
+            f"📌 매수 후 내 지분: **{my_shares + buy_share_qty}주 "
+            f"({round((my_shares + buy_share_qty) / MAX_SHARES * 100, 1)}%)**"
+        )
+
+        if available <= 0:
+            st.error("이 도시의 모든 주식이 매진되었습니다!")
+        elif st.button("✅ 지분 매수 확정", key="do_share_buy"):
+            if user["money"] < share_total_cost:
+                st.error("잔고가 부족합니다!")
+            elif buy_share_qty > available:
+                st.error(f"잔여 주식이 {available}주뿐입니다!")
             else:
-                st.success(f"✅ {buy_share_qty}주 매수 완료! (총 보유: {my_shares + buy_share_qty}주)")
-            st.rerun()
+                run("UPDATE users SET money=money-? WHERE student_id=?", (share_total_cost, sid))
+                run("UPDATE shares SET amount=amount+? WHERE student_id=? AND city=?",
+                    (buy_share_qty, sid, cur_city))
+                run("UPDATE cities SET invest_total=invest_total+? WHERE name=?",
+                    (share_total_cost, cur_city))
+                check_city_levelup(cur_city)
+                add_log(sid, f"📈 {cur_city} 지분 {buy_share_qty}주 매수 ({format_won(share_total_cost)})")
+
+                new_lord = get_lord(cur_city)
+                if new_lord == sid:
+                    st.success(f"🎉 지분 매수 완료! 당신이 {cur_city}의 새 영주가 되었습니다!")
+                else:
+                    st.success(f"✅ {buy_share_qty}주 매수 완료! (총 보유: {my_shares + buy_share_qty}주)")
+                st.rerun()
+
+    # ── 매도 탭 (신규) ───────────────────────────────────────
+    with sell_tab:
+        if my_shares <= 0:
+            st.info("보유한 지분이 없어 매도할 수 없습니다.")
+        else:
+            sell_qty = st.number_input(
+                f"매도할 주식 수 (주당 {format_won(current_sell_price)}, 보유 {my_shares}주)",
+                min_value=1, max_value=my_shares, value=1, key="share_sell_qty"
+            )
+            sell_revenue = sell_qty * current_sell_price
+
+            st.info(
+                f"💰 매도 수량: **{sell_qty}주** × {format_won(current_sell_price)} = "
+                f"**총 {format_won(sell_revenue)}**\n\n"
+                f"📌 매도 후 내 지분: **{my_shares - sell_qty}주**"
+            )
+            st.caption("⚠️ 매도가는 매수가의 90% 입니다 (거래 수수료 10%).")
+
+            was_lord = (get_lord(cur_city) == sid)
+
+            if st.button("✅ 지분 매도 확정", key="do_share_sell"):
+                run("UPDATE shares SET amount=amount-? WHERE student_id=? AND city=?",
+                    (sell_qty, sid, cur_city))
+                run("UPDATE users SET money=money+? WHERE student_id=?",
+                    (sell_revenue, sid))
+                add_log(sid, f"📉 {cur_city} 지분 {sell_qty}주 매도 (+{format_won(sell_revenue)})")
+
+                if was_lord and get_lord(cur_city) != sid:
+                    st.warning(f"👑 지분 매도로 인해 {cur_city}의 영주 자리에서 물러났습니다.")
+                st.success(f"✅ {sell_qty}주 매도 완료! {format_won(sell_revenue)}을 받았습니다.")
+                st.rerun()
 
     # ── 전체 도시 투자 현황 요약 ─────────────────────────────────────────
     st.markdown("---")
@@ -1191,6 +1253,7 @@ def page_admin():
         "⚡ 돌발 이벤트",
         "🔐 비밀번호 관리",
         "🔄 게임 초기화"
+        "📦 물품 가격 현황"
     ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1454,7 +1517,58 @@ def page_admin():
                 reset_db()
                 st.success("✅ 게임 데이터가 초기화되었습니다! 모든 학생이 1,000,000원으로 시작합니다.")
                 st.balloons()
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 탭 5: 물품 가격 조정
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ with admin_tab5:
+        st.subheader("📦 도시별 물품 가격 현황")
 
+        rows = fetchall(
+            "SELECT city, name, buy_price, sell_price, unlock_level FROM goods ORDER BY city, name"
+        )
+        if not rows:
+            st.info("등록된 물품이 없습니다.")
+        else:
+            df_goods = pd.DataFrame(
+                [dict(r) for r in rows],
+                columns=["city", "name", "buy_price", "sell_price", "unlock_level"]
+            )
+            df_goods.columns = ["도시", "물품명", "매입가", "판매가", "해금레벨"]
+
+            city_filter = st.selectbox(
+                "도시 선택", ["전체"] + sorted(df_goods["도시"].unique().tolist()),
+                key="admin_price_city_filter"
+            )
+            view_df = df_goods if city_filter == "전체" else df_goods[df_goods["도시"] == city_filter]
+
+            st.dataframe(view_df, use_container_width=True, hide_index=True)
+
+            st.markdown("#### 📈 물품별 평균 가격 비교 (전체 도시 기준)")
+            avg_df = df_goods.groupby("물품명")[["매입가", "판매가"]].mean().round(0)
+            st.bar_chart(avg_df)
+
+            st.markdown("#### ✏️ 물품 가격 직접 조정")
+            st.caption("가격이 지나치게 높아진 물품을 선택해 초기화하거나 조정할 수 있습니다.")
+
+            adjust_city = st.selectbox("도시", sorted(df_goods["도시"].unique().tolist()), key="adj_city")
+            city_goods = df_goods[df_goods["도시"] == adjust_city]["물품명"].tolist()
+            adjust_good = st.selectbox("물품", city_goods, key="adj_good")
+
+            cur_row = fetchone(
+                "SELECT buy_price, sell_price FROM goods WHERE city=? AND name=?",
+                (adjust_city, adjust_good)
+            )
+
+            new_buy = st.number_input("새 매입가", min_value=0, value=cur_row["buy_price"], step=100, key="adj_buy")
+            new_sell = st.number_input("새 판매가", min_value=0, value=cur_row["sell_price"], step=100, key="adj_sell")
+
+            if st.button("💾 가격 적용", key="apply_price_adjust"):
+                run(
+                    "UPDATE goods SET buy_price=?, sell_price=? WHERE city=? AND name=?",
+                    (new_buy, new_sell, adjust_city, adjust_good)
+                )
+                st.success(f"{adjust_city} - {adjust_good} 가격이 조정되었습니다.")
+                st.rerun()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 10. 학생 메인 페이지
