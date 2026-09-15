@@ -809,19 +809,35 @@ def tab_trade(sid):
     st.markdown("---")
     st.markdown("### 💰 매도 (판매)")
 
-    # 현재 도시에서 보유 중인 재고만 조회
-    my_inventory = fetchall(
-        "SELECT good_name, quantity, avg_price FROM inventory WHERE student_id=? AND city=? AND quantity>0",
-        (sid, cur_city)
+    # 도시 구분 없이 학생이 보유한 모든 화물을 물품별로 합산 (구매 도시 상관없이 배에 싣고 다님)
+    my_inventory_raw = fetchall(
+        "SELECT good_name, city, quantity, avg_price FROM inventory WHERE student_id=? AND quantity>0",
+        (sid,)
     )
 
-    if not my_inventory:
-        st.info("이 도시에서 판매할 수 있는 보유 재고가 없습니다.")
+    if not my_inventory_raw:
+        st.info("판매할 수 있는 보유 재고가 없습니다.")
     else:
+        # 물품명별로 수량/가중평균 매입가 합산
+        agg = {}
+        for row in my_inventory_raw:
+            name = row["good_name"]
+            if name not in agg:
+                agg[name] = {"quantity": 0, "cost": 0}
+            agg[name]["quantity"] += row["quantity"]
+            agg[name]["cost"] += row["quantity"] * row["avg_price"]
+
+        my_inventory = [
+            {"good_name": name, "quantity": d["quantity"],
+             "avg_price": d["cost"] // d["quantity"] if d["quantity"] > 0 else 0}
+            for name, d in agg.items()
+        ]
+
         sell_names = [inv["good_name"] for inv in my_inventory]
         sel_sell = st.selectbox("판매할 상품", sell_names, key="sell_sel")
         sel_inv = next(inv for inv in my_inventory if inv["good_name"] == sel_sell)
 
+        # 판매가는 반드시 '현재 위치한 도시(cur_city)' 기준으로 계산 (구매 도시와 무관)
         sell_price_here = get_sell_price(sel_sell, cur_city)
         sell_qty = st.number_input(
             "판매 수량", min_value=1, max_value=sel_inv["quantity"], value=1, key="sell_qty"
@@ -835,24 +851,36 @@ def tab_trade(sid):
         )
 
         st.info(
-            f"📦 상품: **{sel_sell}** | 판매 단가: {format_won(sell_price_here)} × {sell_qty}개\n\n"
+            f"📦 상품: **{sel_sell}** (보유 {sel_inv['quantity']}개, 평균 매입가 {format_won(sel_inv['avg_price'])}) | "
+            f"판매 단가: {format_won(sell_price_here)} × {sell_qty}개\n\n"
             f"🧾 판매 금액: **{format_won(sell_total)}** "
             f"({'🟢 +' if profit >= 0 else '🔴 '}{format_won(abs(profit))}, {profit_rate}%)"
         )
 
         if st.button("✅ 매도 확정", key="do_sell"):
-            # 재고 차감 (0이 되면 행 자체를 삭제)
-            remaining_qty = sel_inv["quantity"] - sell_qty
-            if remaining_qty > 0:
-                run(
-                    "UPDATE inventory SET quantity=? WHERE student_id=? AND good_name=? AND city=?",
-                    (remaining_qty, sid, sel_sell, cur_city)
-                )
-            else:
-                run(
-                    "DELETE FROM inventory WHERE student_id=? AND good_name=? AND city=?",
-                    (sid, sel_sell, cur_city)
-                )
+            # 여러 도시에서 나눠 구매한 같은 물품일 수 있으므로, 재고 기록들을 순서대로 차감
+            remaining = sell_qty
+            rows_for_good = fetchall(
+                "SELECT city, quantity FROM inventory WHERE student_id=? AND good_name=? AND quantity>0",
+                (sid, sel_sell)
+            )
+            for r in rows_for_good:
+                if remaining <= 0:
+                    break
+                take = min(remaining, r["quantity"])
+                new_qty = r["quantity"] - take
+                if new_qty > 0:
+                    run(
+                        "UPDATE inventory SET quantity=? WHERE student_id=? AND good_name=? AND city=?",
+                        (new_qty, sid, sel_sell, r["city"])
+                    )
+                else:
+                    run(
+                        "DELETE FROM inventory WHERE student_id=? AND good_name=? AND city=?",
+                        (sid, sel_sell, r["city"])
+                    )
+                remaining -= take
+
             # 잔고 증가
             run("UPDATE users SET money=money+? WHERE student_id=?", (sell_total, sid))
             add_log(sid, f"💰 {cur_city}에서 {sel_sell} {sell_qty}개 매도 (+{format_won(sell_total)})")
