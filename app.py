@@ -806,6 +806,59 @@ def tab_trade(sid):
             st.success(f"✅ {sel_buy} {buy_qty}개 구매 완료!")
             st.rerun()
 
+    st.markdown("---")
+    st.markdown("### 💰 매도 (판매)")
+
+    # 현재 도시에서 보유 중인 재고만 조회
+    my_inventory = fetchall(
+        "SELECT good_name, quantity, avg_price FROM inventory WHERE student_id=? AND city=? AND quantity>0",
+        (sid, cur_city)
+    )
+
+    if not my_inventory:
+        st.info("이 도시에서 판매할 수 있는 보유 재고가 없습니다.")
+    else:
+        sell_names = [inv["good_name"] for inv in my_inventory]
+        sel_sell = st.selectbox("판매할 상품", sell_names, key="sell_sel")
+        sel_inv = next(inv for inv in my_inventory if inv["good_name"] == sel_sell)
+
+        sell_price_here = get_sell_price(sel_sell, cur_city)
+        sell_qty = st.number_input(
+            "판매 수량", min_value=1, max_value=sel_inv["quantity"], value=1, key="sell_qty"
+        )
+
+        sell_total = sell_price_here * sell_qty
+        profit = (sell_price_here - sel_inv["avg_price"]) * sell_qty
+        profit_rate = (
+            round((sell_price_here - sel_inv["avg_price"]) / sel_inv["avg_price"] * 100, 1)
+            if sel_inv["avg_price"] > 0 else 0
+        )
+
+        st.info(
+            f"📦 상품: **{sel_sell}** | 판매 단가: {format_won(sell_price_here)} × {sell_qty}개\n\n"
+            f"🧾 판매 금액: **{format_won(sell_total)}** "
+            f"({'🟢 +' if profit >= 0 else '🔴 '}{format_won(abs(profit))}, {profit_rate}%)"
+        )
+
+        if st.button("✅ 매도 확정", key="do_sell"):
+            # 재고 차감 (0이 되면 행 자체를 삭제)
+            remaining_qty = sel_inv["quantity"] - sell_qty
+            if remaining_qty > 0:
+                run(
+                    "UPDATE inventory SET quantity=? WHERE student_id=? AND good_name=? AND city=?",
+                    (remaining_qty, sid, sel_sell, cur_city)
+                )
+            else:
+                run(
+                    "DELETE FROM inventory WHERE student_id=? AND good_name=? AND city=?",
+                    (sid, sel_sell, cur_city)
+                )
+            # 잔고 증가
+            run("UPDATE users SET money=money+? WHERE student_id=?", (sell_total, sid))
+            add_log(sid, f"💰 {cur_city}에서 {sel_sell} {sell_qty}개 매도 (+{format_won(sell_total)})")
+            st.success(f"✅ {sel_sell} {sell_qty}개를 판매하여 {format_won(sell_total)}을 받았습니다.")
+            st.rerun()
+
 def get_share_price(city_name):
     """
     도시 레벨과 유통 비율에 따라 실시간으로 변하는 지분 가격을 계산합니다.
