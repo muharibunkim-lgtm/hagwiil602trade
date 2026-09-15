@@ -511,7 +511,7 @@ def sidebar_login():
     if role == "👩‍🏫 교사 관리자":
         pw = st.sidebar.text_input("관리자 비밀번호", type="password", key="admin_pw")
         if st.sidebar.button("로그인", key="admin_login"):
-            if pw == "1234":
+            if pw == "1111":
                 st.session_state.logged_in = "admin"
                 st.session_state.student_id = None
                 st.rerun()
